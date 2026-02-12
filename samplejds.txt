@@ -1,0 +1,20 @@
+#--------------------------------------JD1-----------------------------------------# 
+A highly motivated Computer Science Engineering graduate with a strong foundation in Artificial Intelligence and Machine Learning.
+Proficient in Python, data structures, and algorithms, with hands-on experience in building, training, and deploying machine learning models using libraries such as TensorFlow, PyTorch, Scikit-learn, and Pandas. 
+Skilled in data preprocessing, feature engineering, model evaluation, and performance optimization.
+Experienced in developing end-to-end AI solutions including classification, regression, NLP, and computer vision projects.
+Familiar with deep learning architectures such as CNNs, RNNs, and transformers, as well as model deployment using Flask/FastAPI and basic cloud platforms. 
+Strong understanding of statistics, linear algebra, and probability concepts applied to real-world datasets.
+Passionate about leveraging AI to solve practical problems and continuously learning emerging technologies in data science and intelligent systems.
+
+
+#------------------------------------JD2---------------------------------------------#
+A results-driven Senior Frontend Engineer with extensive experience in designing and developing scalable, high-performance web applications.
+Proficient in modern JavaScript frameworks such as React, Angular, and Vue.js, with deep expertise in TypeScript, HTML5, CSS3, and responsive design principles.
+Strong understanding of frontend architecture, state management (Redux, Context API), component-driven development, and performance optimization techniques.
+Experienced in building reusable UI components, implementing pixel-perfect designs, and ensuring cross-browser compatibility and accessibility standards (WCAG).
+Skilled in integrating RESTful APIs and GraphQL services, handling authentication flows, and optimizing frontend-backend communication.
+Adept at writing clean, maintainable, and testable code using tools like Jest, Cypress, and React Testing Library.
+Familiar with CI/CD pipelines, Git workflows, code reviews, and Agile methodologies.
+Demonstrated leadership in mentoring junior developers, driving technical decisions, improving code quality standards, and collaborating closely with product, design, and backend teams to deliver seamless user experiences.
+Passionate about staying updated with emerging frontend technologies and continuously enhancing application performance, scalability, and usability.
