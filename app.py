@@ -257,9 +257,22 @@ if page == "Resume Details":
         if result:
             st.subheader("Extracted Resume Sections")
             feedback = result.get("llm_feedback", "")
-            for line in feedback.split("\n"):
-                if line.strip():
-                    st.write("•", line.strip())
+            feedback = re.sub(r"\*\*(.+?)\*\*\s*:\s*", r"**\1** ", feedback)
+            # Render with markdown so **bold** headings display prominently
+            st.markdown("""
+            <style>
+                .resume-section strong {
+                    font-size: 1.25rem;
+                    color: #60a5fa;
+                    display: block;
+                    margin-top: 1rem;
+                    margin-bottom: 0.25rem;
+                    border-left: 3px solid #818cf8;
+                    padding-left: 0.5rem;
+                }
+            </style>
+            """, unsafe_allow_html=True)
+            st.markdown(f'<div class="resume-section">\n\n{feedback}\n\n</div>', unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════
