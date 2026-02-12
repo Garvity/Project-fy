@@ -52,8 +52,8 @@ st.markdown("""
 st.sidebar.title("🔑 API Configuration")
 api_key_input = st.sidebar.text_input("Enter your Hugging Face API Key", type="password")
 if api_key_input:
-    os.environ["HF_TOKEN"] = api_key_input
-api_key = os.getenv("HF_TOKEN")
+    st.session_state["api_key"] = api_key_input
+api_key = st.session_state.get("api_key")
 if api_key:
     st.sidebar.success("✅ API key is set!")
 
