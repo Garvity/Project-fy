@@ -1,0 +1,42 @@
+🔹 Resume Only
+Questions that focus purely on the uploaded resume's content:
+
+"List the projects done by the candidate"
+"What are the candidate's technical skills?"
+"What is the candidate's educational background?"
+"Summarize the candidate's work experience"
+"What certifications does the candidate have?"
+"What programming languages does the candidate know?"
+
+
+🔹 Job Description Only
+Questions about the JD you pasted (requires JD to be entered):
+
+"What are the key skills required for this role?"
+"What is the minimum experience required?"
+"Summarize the main responsibilities of this position"
+"What tools and technologies are mentioned in this job?"
+"Is this role remote or on-site?"
+
+🔹 All (Resume + JD + Vector Store)
+Comparative questions that look at both resume and JD together:
+
+"How well does the candidate fit this job description?"
+"What skills is the candidate missing for this role?"
+"What are the candidate's strongest matching qualifications?"
+"Suggest improvements to make this resume a better match"
+"Does the candidate's experience level match this role?"
+"What are the candidate's strengths and weaknesses for this position?"
+
+🔹 Vector Store Only
+Questions that pull from the FAISS database of job descriptions and resumes, matched against the uploaded resume's skills:
+
+"What job descriptions could be a perfect match for the candidate's resume?"
+"What types of roles match the candidate's skill set?"
+"Find similar job postings for this candidate"
+"Are there any resumes in the database with a similar profile?"
+"What career paths align with the candidate's background?"
+
+Note: "Resume Only" and "All" are the most useful for day-to-day use.
+ "Vector Store Only" is best for discovering matching job postings from the database.
+  "Job Description Only" is useful when you just want to understand a JD without comparing it to a resume.

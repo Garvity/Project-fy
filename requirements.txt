@@ -16,3 +16,4 @@ python-multipart
 uvicorn
 plotly
 python-dotenv
+fpdf2
