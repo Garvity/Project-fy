@@ -49,7 +49,79 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ─── Authentication Gate ──────────────────────────────────────────────
+if "logged_in_user" not in st.session_state:
+    st.session_state.logged_in_user = None
+
+if st.session_state.logged_in_user is None:
+    st.markdown("""<h1 style='text-align: center; margin-top: 2rem;'>📄 Resume Analyzer Pro</h1>
+    <p style='text-align: center; color: #94a3b8;'>Sign in or create an account to get started</p>""", unsafe_allow_html=True)
+
+    auth_tab1, auth_tab2 = st.tabs(["🔑 Login", "📝 Sign Up"])
+
+    with auth_tab1:
+        login_user = st.text_input("Username", key="login_user")
+        login_pass = st.text_input("Password", type="password", key="login_pass")
+        if st.button("Login", use_container_width=True, type="primary"):
+            if login_user and login_pass:
+                resp = requests.post("http://localhost:8000/login", data={
+                    "username": login_user, "password": login_pass
+                })
+                if resp.status_code == 200:
+                    result = resp.json()
+                    if result.get("success"):
+                        st.session_state.logged_in_user = login_user
+                        st.success(result["message"])
+                        st.rerun()
+                    else:
+                        st.error(result.get("message", "Login failed."))
+            else:
+                st.warning("Please enter both username and password.")
+
+    with auth_tab2:
+        signup_user = st.text_input("Choose a Username", key="signup_user")
+        signup_email = st.text_input("Enter your Email", key="signup_email")
+        signup_pass = st.text_input("Choose a Password", type="password", key="signup_pass")
+        st.caption("Password must be at least 8 characters, include uppercase, lowercase, number, and special character (@$!%*?&).")
+        signup_pass2 = st.text_input("Confirm Password", type="password", key="signup_pass2")
+
+        if st.button("Sign Up", use_container_width=True, type="primary"):
+            password_pattern = r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$"
+
+            if not signup_user or not signup_pass or not signup_email:
+                st.warning("Please fill in all fields.")
+            elif not re.match(r"[^@]+@[^@]+\.[^@]+", signup_email):
+                st.error("Please enter a valid email address.")
+            elif signup_pass != signup_pass2:
+                st.error("Passwords do not match.")
+            elif not re.match(password_pattern, signup_pass):
+                st.error("Password is too weak. It must be 8+ chars with uppercase, lowercase, number, and special char.")
+            else:
+                resp = requests.post("http://localhost:8000/signup", data={
+                    "username": signup_user,
+                    "email": signup_email,
+                    "password": signup_pass
+                })
+                if resp.status_code == 200:
+                    result = resp.json()
+                    if result.get("success"):
+                        st.success("✅ Account created successfully! Please go to the Login tab to sign in.")
+                    else:
+                        st.error(result.get("message", "Signup failed."))
+                else:
+                    st.error(f"Server error: {resp.text}")
+
+    st.stop()
+
+# ─── User is authenticated — proceed ─────────────────────────────────
+current_user = st.session_state.logged_in_user
+
 # ─── Sidebar ──────────────────────────────────────────────────────────
+st.sidebar.markdown(f"👤 **{current_user}**")
+if st.sidebar.button("🚪 Logout"):
+    st.session_state.logged_in_user = None
+    st.rerun()
+st.sidebar.markdown("---")
 st.sidebar.title("🔑 API Configuration")
 api_key_input = st.sidebar.text_input("Enter your Hugging Face API Key", type="password")
 if api_key_input:
@@ -389,27 +461,11 @@ elif page == "Chat with Resume and Job Description":
     st.header("💬 Chat with Resume & Job Description")
     st.markdown("Ask questions about your resume, career advice, or interview prep — powered by RAG.")
 
-    # ── Sidebar controls for chat ──
-    with st.sidebar:
-        st.markdown("---")
-        st.subheader("💬 Chat Settings")
-        chat_source = st.selectbox(
-            "Chat Context Source",
-            ["All", "Resume Only", "Job Description Only", "Vector Store Only"],
-            index=0,
-            help="Choose what context the AI uses to answer your questions.",
-        )
-        source_map = {
-            "All": "all",
-            "Resume Only": "resume",
-            "Job Description Only": "job",
-            "Vector Store Only": "vectorstore",
-        }
-        selected_source = source_map[chat_source]
+    selected_source = "all"
 
-        if st.button("🗑️ Clear Chat History"):
-            st.session_state.chat_history = []
-            st.rerun()
+    if st.button("🗑️ Clear Chat History"):
+        st.session_state.chat_history = []
+        st.rerun()
 
     uploaded_file = get_shared_resume()
 
@@ -417,7 +473,7 @@ elif page == "Chat with Resume and Job Description":
     if uploaded_file:
         if st.button("💾 Save Resume to Vector DB"):
             with st.spinner("Saving to vector database..."):
-                result = call_backend_no_data("save_resume_to_vectorstore", uploaded_file)
+                result = call_backend("save_resume_to_vectorstore", uploaded_file, {"username": current_user})
             if result and result.get("success"):
                 st.success(f"✅ {result['message']}")
             elif result:
@@ -468,6 +524,7 @@ elif page == "Chat with Resume and Job Description":
                     "query": user_question,
                     "job_description": st.session_state.get("job_description", ""),
                     "chat_source": selected_source,
+                    "username": current_user,
                 }
                 result = call_backend("chat_with_resume", uploaded_file, data)
                 response = result.get("llm_feedback", "No response received.") if result else "No response received."
@@ -518,6 +575,9 @@ elif page == "Compare Resumes":
 
     st.success(f"✅ {len(uploaded_resumes)} resumes uploaded")
 
+    # Show upload order for reference
+    st.caption("**Upload Order:** " + ", ".join([f"Resume {i}: {f.name}" for i, f in enumerate(uploaded_resumes, 1)]))
+
     # ── Compare button ──
     if st.button("🚀 Compare Resumes", type="primary"):
         with st.spinner(f"🔄 Scoring {len(uploaded_resumes)} resumes against the job description..."):
@@ -549,7 +609,7 @@ elif page == "Compare Resumes":
                 border: 2px solid {best_color}; border-radius: 12px; padding: 1.5rem;
                 text-align: center; margin-bottom: 1rem;">
                 <div style="font-size: 0.9rem; color: #94a3b8;">🏆 Best Match</div>
-                <div style="font-size: 1.5rem; font-weight: 700; color: #e2e8f0;">{best['filename']}</div>
+                <div style="font-size: 1.5rem; font-weight: 700; color: #e2e8f0;">Resume {best.get('upload_order', '?')} — {best['filename']}</div>
                 <div style="font-size: 2.5rem; font-weight: 700; color: {best_color};">{best['total_score']}%</div>
             </div>""",
             unsafe_allow_html=True,
@@ -568,7 +628,7 @@ elif page == "Compare Resumes":
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <div>
                                 <span style="font-size: 1.3rem;">{medal}</span>
-                                <span style="font-size: 1.1rem; font-weight: 600; color: #e2e8f0; margin-left: 0.5rem;">{r['filename']}</span>
+                                <span style="font-size: 1.1rem; font-weight: 600; color: #e2e8f0; margin-left: 0.5rem;">Resume {r.get('upload_order', '?')} — {r['filename']}</span>
                             </div>
                             <div style="font-size: 1.5rem; font-weight: 700; color: {color};">{r['total_score']}%</div>
                         </div>
@@ -581,7 +641,7 @@ elif page == "Compare Resumes":
                     </div>""",
                     unsafe_allow_html=True,
                 )
-                with st.expander(f"📝 Summary — {r['filename']}"):
+                with st.expander(f"📝 Summary — Resume {r.get('upload_order', '?')}: {r['filename']}"):
                     st.write(r.get("summary", "No summary available."))
 
         # ── Save to Vector DB ──
@@ -591,7 +651,7 @@ elif page == "Compare Resumes":
 
         selected_to_save = []
         for i, r in enumerate(results):
-            if st.checkbox(f"📄 {r['filename']} (Score: {r['total_score']}%)", key=f"save_cb_{i}"):
+            if st.checkbox(f"📄 Resume {r.get('upload_order', '?')}: {r['filename']} (Score: {r['total_score']}%)", key=f"save_cb_{i}"):
                 selected_to_save.append(r['filename'])
 
         if selected_to_save:
@@ -604,6 +664,7 @@ elif page == "Compare Resumes":
                             resp = requests.post(
                                 "http://localhost:8000/save_resume_to_vectorstore",
                                 files=files,
+                                data={"username": current_user},
                             )
                             if resp.status_code == 200 and resp.json().get("success"):
                                 st.success(f"✅ {f.name} — {resp.json()['message']}")
@@ -628,7 +689,7 @@ elif page == "Compare Resumes":
                 st.write(chat["response"])
 
         compare_question = st.chat_input(
-            "Ask about the comparison (e.g., 'Why is resume A better than B?')...",
+            "Ask about the comparison (e.g., 'Why is Resume 1 better than Resume 2?')...",
             key="compare_chat_input",
         )
 

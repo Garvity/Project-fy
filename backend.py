@@ -6,6 +6,7 @@ from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 import json
+import bcrypt
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -46,6 +47,94 @@ job_vectorstore = FAISS.load_local(
 resume_vectorstore = FAISS.load_local(
     "vector_store/resume_faiss", embeddings, allow_dangerous_deserialization=True
 )
+
+# ═══════════════════════════════════════════════════════════════════════
+# User Auth Helpers
+# ═══════════════════════════════════════════════════════════════════════
+USERS_FILE = "users.json"
+
+
+def load_users():
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "r") as f:
+            return json.load(f)
+    return {"users": {}}
+
+
+def save_users(data):
+    with open(USERS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def get_user_resume_store(username: str):
+    """Load or create a per-user FAISS resume vector store."""
+    user_store_path = f"vector_store/users/{username}/resume_faiss"
+    if os.path.exists(user_store_path):
+        return FAISS.load_local(user_store_path, embeddings, allow_dangerous_deserialization=True)
+    else:
+        from langchain.schema import Document
+        placeholder = Document(page_content="placeholder", metadata={"source": "init"})
+        store = FAISS.from_documents([placeholder], embeddings)
+        os.makedirs(user_store_path, exist_ok=True)
+        store.save_local(user_store_path)
+        return store
+
+
+def save_user_resume_store(username: str, store):
+    """Save user's FAISS store to disk."""
+    user_store_path = f"vector_store/users/{username}/resume_faiss"
+    os.makedirs(user_store_path, exist_ok=True)
+    store.save_local(user_store_path)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Authentication Endpoints
+# ═══════════════════════════════════════════════════════════════════════
+@app.post("/signup")
+async def signup(
+    username: str = Form(...),
+    email: str = Form(...),
+    password: str = Form(...)
+):
+    data = load_users()
+
+    # 1. Check if username exists
+    if username in data["users"]:
+        return {"success": False, "message": "Username already exists."}
+
+    # 2. Check if email exists
+    for user_data in data["users"].values():
+        if user_data.get("email") == email:
+            return {"success": False, "message": "Email already registered."}
+
+    # 3. Validate Password Strength
+    password_pattern = r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$"
+    if not re.match(password_pattern, password):
+        return {
+            "success": False,
+            "message": "Password must be at least 8 chars with uppercase, lowercase, number, and special character."
+        }
+
+    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    data["users"][username] = {
+        "password_hash": hashed,
+        "email": email
+    }
+    save_users(data)
+    get_user_resume_store(username)
+    return {"success": True, "message": f"Account created for {username}! Please log in."}
+
+
+@app.post("/login")
+async def login(username: str = Form(...), password: str = Form(...)):
+    data = load_users()
+    user = data["users"].get(username)
+    if not user:
+        return {"success": False, "message": "User not found."}
+    if bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
+        return {"success": True, "message": f"Welcome back, {username}!", "username": username}
+    return {"success": False, "message": "Incorrect password."}
+
 
 #  Extract text from uploaded PDF resume
 def extract_text_from_pdf(file):
@@ -202,6 +291,7 @@ async def chat_with_resume(
     api_key: str = Form(...),
     job_description: str = Form(""),
     chat_source: str = Form("all"),
+    username: str = Form(""),
     file: UploadFile = File(...)
 ):  
     # ── Extract and clean the user's uploaded resume ──
@@ -234,8 +324,12 @@ async def chat_with_resume(
 
         # Search for job descriptions that semantically match the resume's skills/content
         job_results = job_vectorstore.similarity_search_by_vector(resume_embedding, k=5)
-        # Search for similar resumes in the database for comparison
-        resume_results = resume_vectorstore.similarity_search_by_vector(resume_embedding, k=3)
+        # Search for similar resumes — use user's store if logged in, else global
+        if username:
+            user_store = get_user_resume_store(username)
+            resume_results = user_store.similarity_search_by_vector(resume_embedding, k=3)
+        else:
+            resume_results = resume_vectorstore.similarity_search_by_vector(resume_embedding, k=3)
 
         if job_results:
             job_context = "\n\n".join([doc.page_content for doc in job_results])
@@ -275,8 +369,11 @@ Instructions:
 
 # Page 3 helper: Save resume to vector store
 @app.post("/save_resume_to_vectorstore")
-async def save_resume_to_vectorstore(file: UploadFile = File(...)):
-    """Extract text from uploaded resume PDF, chunk it, and add to the resume FAISS store."""
+async def save_resume_to_vectorstore(
+    file: UploadFile = File(...),
+    username: str = Form("")
+):
+    """Extract text from uploaded resume PDF, chunk it, and add to the user's FAISS store."""
     global resume_vectorstore
     try:
         resume_text = extract_text_from_pdf(file.file)
@@ -294,8 +391,14 @@ async def save_resume_to_vectorstore(file: UploadFile = File(...)):
             Document(page_content=chunk, metadata={"source": file.filename})
             for chunk in chunks
         ]
-        resume_vectorstore.add_documents(docs)
-        resume_vectorstore.save_local("vector_store/resume_faiss")
+
+        if username:
+            user_store = get_user_resume_store(username)
+            user_store.add_documents(docs)
+            save_user_resume_store(username, user_store)
+        else:
+            resume_vectorstore.add_documents(docs)
+            resume_vectorstore.save_local("vector_store/resume_faiss")
 
         return {
             "success": True,
@@ -317,13 +420,14 @@ async def compare_resumes(
     """Score each uploaded resume against the job description and return ranked results."""
     results = []
 
-    for file in files:
+    for idx, file in enumerate(files, 1):
         resume_text = extract_text_from_pdf(file.file)
         resume_text = clean_text(resume_text)
 
         if not resume_text.strip():
             results.append({
                 "filename": file.filename,
+                "upload_order": idx,
                 "total_score": 0,
                 "skills": 0,
                 "experience": 0,
@@ -338,7 +442,7 @@ async def compare_resumes(
 Job Description:
 {job_description[:3000]}
 
-Resume ({file.filename}):
+Resume {idx} ({file.filename}):
 {resume_text[:3000]}
 
 You MUST start your response with exactly these score lines (each on its own line, number 0-100):
@@ -374,6 +478,7 @@ Keep the summary concise — no bullet points, no section headings.
 
         results.append({
             "filename": file.filename,
+            "upload_order": idx,
             **scores,
             "summary": summary,
         })
@@ -414,9 +519,13 @@ User's Question: {query}
 
 {combined_context}
 
-Instructions:
+IMPORTANT INSTRUCTIONS:
+- Each resume above is labeled with a NUMBER, e.g. "Resume 1", "Resume 2", etc.
+- First, identify the CANDIDATE'S NAME from each resume content (look for the name at the top of the resume).
+- ALWAYS refer to candidates as "Resume 1 (Candidate Name)", e.g. "Resume 1 (John Doe)".
+- NEVER mix up or swap which content belongs to which resume number.
+- The resume NUMBER corresponds to the upload order chosen by the user.
 - Answer based strictly on the resumes and job description above.
-- When comparing candidates, refer to them by their resume filename.
 - Be specific about why one candidate is stronger or weaker than another.
 - If asked for rankings, provide scores and clear justifications.
 - Be concise and professional.
@@ -429,196 +538,36 @@ Instructions:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Skill Gap Analysis
+# Resume Enhancement Endpoints
 # ═══════════════════════════════════════════════════════════════════════
-@app.post("/skill_gap_analysis")
-async def skill_gap_analysis(file: UploadFile = File(...), api_key: str = Form(...)):
-    """Extract candidate skills, find market-demanded skills from job vector store, compare."""
-    resume_text = extract_text_from_pdf(file.file)
-    resume_text = clean_text(resume_text)
 
-    # 1) Extract candidate skills via LLM
-    skill_prompt = f"""Extract ALL technical and professional skills from this resume.
-Return ONLY a JSON array of skill strings, nothing else. Example: ["Python", "Machine Learning", "SQL"]
-
-Resume:
-{resume_text[:4000]}
-
-Return ONLY the JSON array:"""
-
-    skill_response = get_llm_response(api_key, skill_prompt)
-    try:
-        # Find the JSON array in the response
-        match = re.search(r'\[.*?\]', skill_response, re.DOTALL)
-        candidate_skills = json.loads(match.group(0)) if match else []
-    except Exception:
-        candidate_skills = []
-
-    # 2) Search job vector store for relevant jobs using resume embedding
-    resume_chunks = splitter.split_text(resume_text)
-    if resume_chunks:
-        chunk_embeddings = [embeddings.embed_query(c) for c in resume_chunks]
-        resume_embedding = np.mean(chunk_embeddings, axis=0).tolist()
-    else:
-        resume_embedding = embeddings.embed_query(resume_text[:2000])
-
-    job_results = job_vectorstore.similarity_search_by_vector(resume_embedding, k=10)
-    job_texts = "\n\n".join([doc.page_content for doc in job_results])
-
-    # 3) Extract market-demanded skills from matched jobs via LLM
-    market_prompt = f"""Extract ALL technical and professional skills mentioned across these job descriptions.
-Return ONLY a JSON array of skill strings, nothing else. Example: ["Python", "AWS", "Docker"]
-
-Job Descriptions:
-{job_texts[:5000]}
-
-Return ONLY the JSON array:"""
-
-    market_response = get_llm_response(api_key, market_prompt)
-    try:
-        match = re.search(r'\[.*?\]', market_response, re.DOTALL)
-        market_skills = json.loads(match.group(0)) if match else []
-    except Exception:
-        market_skills = []
-
-    # 4) Compare: normalize to lowercase for matching
-    candidate_lower = {s.lower().strip() for s in candidate_skills}
-    market_lower = {s.lower().strip() for s in market_skills}
-
-    matched = sorted(candidate_lower & market_lower)
-    missing = sorted(market_lower - candidate_lower)
-    extra = sorted(candidate_lower - market_lower)
-
-    return {
-        "candidate_skills": sorted(candidate_lower),
-        "market_skills": sorted(market_lower),
-        "matched_skills": matched,
-        "missing_skills": missing,
-        "extra_skills": extra,
-        "match_percentage": round(len(matched) / max(len(market_lower), 1) * 100),
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# ATS Score Estimator (LLM-Powered Semantic Analysis)
-# ═══════════════════════════════════════════════════════════════════════
-@app.post("/ats_score")
-async def ats_score(file: UploadFile = File(...), api_key: str = Form(...)):
-    """Use the LLM for semantic ATS analysis instead of regex pattern matching."""
-    resume_text = extract_text_from_pdf(file.file)
-    resume_text = clean_text(resume_text)
-
-    prompt = f"""You are the MOST CRITICAL and unforgiving ATS evaluator. You represent a Fortune 500 company that rejects 95% of applicants.
-
-BE BRUTALLY HONEST. Your job is to find EVERY flaw. The average resume scores 30-50% total. A "good" resume scores 50-65%. Only the top 5% of resumes score above 70%.
-
-MANDATORY Scoring Constraints:
-- NEVER give more than 70% of the max score in ANY category unless it is truly flawless.
-- If you would rate something as "good", give it 40-50% of max.
-- If you would rate something as "okay", give it 25-35% of max.
-- If it's "present but not impressive", give 15-25% of max.
-- Your TOTAL score should almost never exceed 65/100.
-
-Categories and max scores with HARSH criteria:
-1. Contact Info (max 20) — Requires ALL FOUR: email, phone, LinkedIn, GitHub/portfolio. Missing even ONE = max 10. Having only email+phone = max 7. No LinkedIn = automatic cap at 12.
-2. Section Structure (max 25) — Requires CLEAR, LABELED, STANDARD headings for Education, Experience, Skills, Projects, and Summary. Missing any major section = max 12. Sections present but poorly organized = max 15. Creative/non-standard headings that confuse ATS parsers = max 10.
-3. Resume Length (max 15) — Ideal is 400-600 words with high information density. Too short (<300) = max 4. Too long (>800) = max 6. Right length but with filler/fluff = max 8.
-4. Impact & Metrics (max 15) — Demands SPECIFIC, QUANTIFIED results in EVERY bullet (e.g., "increased revenue by 23%", "reduced load time by 40%"). Vague verbs like "worked on", "helped with", "responsible for" = max 3. Some metrics but not all bullets = max 6. Good metrics but not in every bullet = max 9.
-5. Keyword Relevance (max 15) — Keywords must appear IN CONTEXT with demonstrated application. A plain skills list = max 4. Keywords present but only in a skills section without project/experience context = max 6. Some contextual usage = max 9.
-6. Formatting & Readability (max 10) — Must be perfectly clean, single-column, consistent bullet style, uniform fonts. ANY inconsistency = max 5. Minor issues = max 6. Good but not perfect = max 7.
-
-Resume:
-{resume_text[:4000]}
-
-You MUST respond with ONLY valid JSON in this exact format, no other text:
-{{
-  "Contact Info": {{"score": <number>, "max": 20, "details": "<one-line critical explanation>"}},
-  "Section Structure": {{"score": <number>, "max": 25, "details": "<one-line critical explanation>"}},
-  "Resume Length": {{"score": <number>, "max": 15, "details": "<one-line critical explanation>"}},
-  "Impact & Metrics": {{"score": <number>, "max": 15, "details": "<one-line critical explanation>"}},
-  "Keyword Relevance": {{"score": <number>, "max": 15, "details": "<one-line critical explanation>"}},
-  "Formatting & Readability": {{"score": <number>, "max": 10, "details": "<one-line critical explanation>"}}
-}}
-"""
-
-    response = get_llm_response(api_key, prompt)
-
-    # Parse the JSON from the LLM response
-    try:
-        json_match = re.search(r'\{.*\}', response, re.DOTALL)
-        breakdown = json.loads(json_match.group(0)) if json_match else {}
-    except Exception:
-        breakdown = {
-            "Contact Info": {"score": 0, "max": 20, "details": "Could not parse LLM response"},
-            "Section Structure": {"score": 0, "max": 25, "details": "Could not parse LLM response"},
-            "Resume Length": {"score": 0, "max": 15, "details": "Could not parse LLM response"},
-            "Impact & Metrics": {"score": 0, "max": 15, "details": "Could not parse LLM response"},
-            "Keyword Relevance": {"score": 0, "max": 15, "details": "Could not parse LLM response"},
-            "Formatting & Readability": {"score": 0, "max": 10, "details": "Could not parse LLM response"},
-        }
-
-    # Ensure scores are clamped to their max values
-    for cat in breakdown:
-        if isinstance(breakdown[cat], dict):
-            max_val = breakdown[cat].get("max", 100)
-            breakdown[cat]["score"] = min(int(breakdown[cat].get("score", 0)), max_val)
-
-    total = sum(v.get("score", 0) for v in breakdown.values())
-    total_max = sum(v.get("max", 0) for v in breakdown.values())
-
-    return {
-        "total_score": total,
-        "total_max": total_max,
-        "percentage": round(total / max(total_max, 1) * 100),
-        "breakdown": breakdown,
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Resume Enhancement: AI Resume Rewriter
-# ═══════════════════════════════════════════════════════════════════════
 @app.post("/rewrite_resume")
 async def rewrite_resume(
     file: UploadFile = File(...),
     api_key: str = Form(...),
     job_description: str = Form(...)
 ):
-    """Rewrite resume bullet points to better match the target job description."""
+    """Rewrite resume bullet points to better match a target job description."""
     resume_text = extract_text_from_pdf(file.file)
     resume_text = clean_text(resume_text)
 
-    prompt = f"""You are an expert resume writer and career coach who values HONESTY above all.
-
-Given the candidate's resume and target job description, your job is to HONESTLY assess the alignment and then enhance ONLY what is genuinely relevant.
+    prompt = f"""You are an expert resume writer. Rewrite and enhance the resume below to better match the target job description.
 
 Job Description:
 {job_description[:3000]}
 
-Original Resume:
+Current Resume:
 {resume_text[:4000]}
 
-CRITICAL Instructions — follow this exact structure:
-
-**⚠️ Alignment Assessment**
-First, honestly assess how well the resume's ACTUAL experience and projects match this JD. If the candidate's background is in a DIFFERENT domain (e.g., resume is AI/ML but JD is frontend, or resume is backend but JD is data science), clearly state:
-- The resume's primary domain/expertise
-- The JD's domain requirements
-- The honest match level (Strong / Partial / Weak / Mismatch)
-- Which parts of the resume genuinely relate to this JD and which don't
-
-**✅ Relevant Experience — Enhanced**
-ONLY rewrite bullet points from sections that GENUINELY align with the JD. Use strong action verbs and add metrics where truthful. Do NOT fabricate frontend experience from ML projects or vice versa. For each rewritten bullet, note WHY in [brackets].
-
-**⚡ Transferable Skills**
-If there's a domain mismatch, highlight bullet points that show transferable skills (e.g., problem-solving, system design, collaboration) without pretending they're direct matches.
-
-**❌ Sections That Cannot Be Enhanced for This JD**
-List any experience/projects that are NOT relevant to this JD and explain why rewriting them would be dishonest. Suggest what the candidate should do instead (e.g., build relevant projects, take courses).
-
-**💡 Recommendations**
-If the resume is a weak match for the JD, provide honest advice: should the candidate apply? What should they add to their resume first? What projects/skills would bridge the gap?
-
-Remember: NEVER fabricate relevance. If an AI/ML project has nothing to do with a frontend JD, say so — don't rewrite it to sound like frontend work."""
+Instructions:
+- Rewrite bullet points to incorporate relevant keywords from the job description.
+- Quantify achievements where possible (add realistic metrics if none exist).
+- Use strong action verbs.
+- Keep the same sections and structure but improve the content.
+- Highlight transferable skills that align with the JD.
+- Output the full enhanced resume in clean markdown format.
+- Do NOT fabricate experience or skills not implied by the original resume.
+"""
 
     feedback = get_llm_response(api_key, prompt)
     if "Error" in feedback:
@@ -626,52 +575,43 @@ Remember: NEVER fabricate relevance. If an AI/ML project has nothing to do with 
     return {"llm_feedback": feedback}
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Resume Enhancement: Keyword Optimizer
-# ═══════════════════════════════════════════════════════════════════════
 @app.post("/keyword_optimizer")
 async def keyword_optimizer(
     file: UploadFile = File(...),
     api_key: str = Form(...),
     job_description: str = Form(...)
 ):
-    """Identify missing JD keywords and suggest where to naturally insert them."""
+    """Analyze keyword gaps between resume and job description."""
     resume_text = extract_text_from_pdf(file.file)
     resume_text = clean_text(resume_text)
 
-    prompt = f"""You are an expert ATS keyword analyst. You must be EXTREMELY PRECISE and HONEST.
-
-CRITICAL RULE: Before classifying ANY keyword as "present" or "missing", you MUST verify it actually appears in the resume text below. Do NOT guess or assume — look for the EXACT keyword or a very close variant. If "Angular" is not written anywhere in the resume, it is MISSING — even if React is present.
+    prompt = f"""You are an ATS keyword optimization expert. Analyze the resume against the job description and identify keyword gaps.
 
 Job Description:
 {job_description[:3000]}
 
-Resume (search this text carefully for each keyword):
+Resume:
 {resume_text[:4000]}
 
-Follow this EXACT structure:
+Provide your analysis using these exact section headings (## markdown):
 
-**⚠️ Domain Alignment Check**
-First, assess whether the resume's domain matches the JD. If the resume is AI/ML-focused but the JD asks for Frontend/Backend (or vice versa), clearly state this mismatch. This affects how realistic the keyword suggestions are.
+## ✅ Keywords Found in Resume
+List keywords from the JD that already appear in the resume.
 
-**✅ Keywords VERIFIED Present in Resume**
-List ONLY keywords from the JD that you can CONFIRM appear in the resume text above (exact match or very close variant). For each, quote the exact line from the resume where it appears.
+## ❌ Missing Keywords
+List important keywords from the JD that are NOT in the resume.
 
-**❌ Keywords Confirmed MISSING from Resume**
-List keywords from the JD that are genuinely NOT in the resume. For each:
-- **Keyword**: [the keyword]
-- **Importance**: [High/Medium/Low]
-- **Can Be Added Honestly?**: [Yes — the candidate has this skill/experience based on their resume] OR [No — adding this would be fabricating experience the candidate doesn't have]
-- **Suggested Placement** (only if "Yes" above): Where and how to naturally insert it
-- **Example Rewrite** (only if "Yes" above): Show the specific rephrased sentence
+## 📝 Where to Add Missing Keywords
+For each missing keyword, suggest exactly WHERE in the resume it should be added and HOW to naturally incorporate it. Be specific about which section (Skills, Experience, Projects, etc.) and provide example bullet points.
 
-**🚫 Keywords That Should NOT Be Added**
-List any JD keywords that the candidate clearly lacks experience in. Be honest — if the resume shows no Angular experience, don't suggest "just add Angular to your skills section." Instead, suggest learning resources or projects to build that skill.
+## 📊 Keyword Match Score
+Give an overall keyword match percentage (0-100%) and brief justification.
 
-**📊 Keyword Match Score**
-Give an honest keyword match percentage based on verified matches only.
-
-REMEMBER: Accuracy over helpfulness. A wrong "present" classification is worse than a harsh "missing" one."""
+Rules:
+- Focus on hard skills, technical terms, tools, and industry-specific language.
+- Be specific and actionable.
+- Use bullet points within each section.
+"""
 
     feedback = get_llm_response(api_key, prompt)
     if "Error" in feedback:
@@ -679,9 +619,6 @@ REMEMBER: Accuracy over helpfulness. A wrong "present" classification is worse t
     return {"llm_feedback": feedback}
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Resume Enhancement: Cover Letter Generator
-# ═══════════════════════════════════════════════════════════════════════
 @app.post("/cover_letter")
 async def cover_letter(
     file: UploadFile = File(...),
@@ -690,13 +627,11 @@ async def cover_letter(
     company_name: str = Form("the company"),
     tone: str = Form("professional")
 ):
-    """Generate a tailored cover letter based on resume + job description."""
+    """Generate a tailored cover letter based on resume and job description."""
     resume_text = extract_text_from_pdf(file.file)
     resume_text = clean_text(resume_text)
 
-    prompt = f"""You are an expert cover letter writer.
-
-Write a compelling, tailored cover letter for the candidate applying to {company_name}.
+    prompt = f"""You are an expert cover letter writer. Write a compelling cover letter for a candidate applying to {company_name}.
 
 Job Description:
 {job_description[:3000]}
@@ -704,17 +639,17 @@ Job Description:
 Candidate's Resume:
 {resume_text[:4000]}
 
-Tone: {tone}
-
 Instructions:
-- Write 3-4 paragraphs (300-400 words total).
-- Opening: Express enthusiasm for the specific role and company. Hook the reader.
-- Body (1-2 paragraphs): Connect 2-3 specific experiences/skills from the resume to the JD requirements. Use concrete examples with results.
-- Closing: Reiterate interest, mention availability, call to action.
-- Do NOT use generic phrases like "I am writing to apply for..." or "I believe I would be a great fit...".
-- Make it sound human, confident, and specific to THIS role — not a template.
-- Use the candidate's actual achievements from the resume, do not fabricate.
-- Format as a proper letter with [Your Name] etc. placeholders for personal details."""
+- Tone: {tone}
+- Write a 3-4 paragraph cover letter.
+- Opening: Hook the reader with enthusiasm for the specific role and company.
+- Body: Highlight 2-3 most relevant experiences/skills from the resume that match the JD. Use specific examples.
+- Closing: Express eagerness, mention availability, and include a call to action.
+- Use the candidate's actual name if found in the resume.
+- Do NOT use generic filler — every sentence should add value.
+- Keep it under 400 words.
+- Format as a professional letter (no markdown headings).
+"""
 
     feedback = get_llm_response(api_key, prompt)
     if "Error" in feedback:
@@ -722,9 +657,6 @@ Instructions:
     return {"llm_feedback": feedback}
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Resume Enhancement: Resume Summary Generator
-# ═══════════════════════════════════════════════════════════════════════
 @app.post("/resume_summary")
 async def resume_summary(
     file: UploadFile = File(...),
@@ -732,34 +664,40 @@ async def resume_summary(
     job_description: str = Form(""),
     summary_type: str = Form("professional_summary")
 ):
-    """Generate a professional summary/objective statement tailored to a specific role."""
+    """Generate a professional summary, career objective, or LinkedIn headline."""
     resume_text = extract_text_from_pdf(file.file)
     resume_text = clean_text(resume_text)
 
-    jd_context = f"\nTarget Job Description:\n{job_description[:2000]}" if job_description.strip() else ""
-
     type_instructions = {
-        "professional_summary": "Write a 3-4 sentence PROFESSIONAL SUMMARY that highlights the candidate's most relevant experience, key technical skills, and career achievements. It should read like a mini elevator pitch.",
-        "objective": "Write a 2-3 sentence CAREER OBJECTIVE that states the candidate's career goals and what they aim to bring to the target role. Focus on value proposition.",
-        "headline": "Write a single powerful HEADLINE (one line, under 15 words) that captures the candidate's professional identity. Example: 'Full-Stack Developer | 5+ Years in Scalable SaaS Products | AWS Certified'"
+        "professional_summary": "Write 3 different professional summary options (3-4 sentences each). Each should highlight the candidate's key strengths, years of experience, technical skills, and value proposition.",
+        "objective": "Write 3 different career objective options (2-3 sentences each). Each should state the candidate's career goals and what they bring to a prospective employer.",
+        "headline": "Write 5 different LinkedIn headline options (under 120 characters each). Each should be punchy, keyword-rich, and highlight the candidate's expertise.",
     }
 
     instruction = type_instructions.get(summary_type, type_instructions["professional_summary"])
 
-    prompt = f"""You are an expert resume writer.
+    jd_context = ""
+    if job_description.strip():
+        jd_context = f"""
+Target Job Description (tailor the summary to this role):
+{job_description[:2000]}
+"""
 
-{instruction}
+    prompt = f"""You are an expert resume and personal branding consultant.
 
 Candidate's Resume:
 {resume_text[:4000]}
 {jd_context}
 
+Task: {instruction}
+
 Rules:
-- Use ONLY information from the resume. Do not fabricate skills, years of experience, or achievements.
-- If a JD is provided, tailor the summary to emphasize skills relevant to that role.
-- Use strong, confident language. Avoid cliches like "hard-working" or "team player".
-- Include specific technologies, tools, or domains from the resume.
-- Generate exactly 3 different versions labeled Version 1, Version 2, Version 3 so the candidate can choose their favorite."""
+- Base everything strictly on the resume content.
+- Number each option (1, 2, 3, etc.).
+- If a JD is provided, tailor the language to match the target role.
+- Use strong, confident language — no generic fluff.
+- Include relevant technical skills and domain expertise.
+"""
 
     feedback = get_llm_response(api_key, prompt)
     if "Error" in feedback:
@@ -768,133 +706,250 @@ Rules:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Job Search: Job Recommendation Feed
+# Resume Insights Endpoints
 # ═══════════════════════════════════════════════════════════════════════
-@app.post("/job_recommendations")
-async def job_recommendations(
+
+@app.post("/skill_gap_analysis")
+async def skill_gap_analysis(
     file: UploadFile = File(...),
-    api_key: str = Form(...),
-    top_n: int = Form(10)
+    api_key: str = Form(...)
 ):
-    """Find best-matching jobs from the vector store based on resume embeddings."""
+    """Analyze skill gaps by comparing resume skills against market-demanded skills from the vector store."""
     resume_text = extract_text_from_pdf(file.file)
     resume_text = clean_text(resume_text)
 
-    # Build a composite embedding from resume chunks
+    # Extract candidate skills via LLM
+    skill_prompt = f"""Extract ALL technical and professional skills from this resume. Return them as a simple comma-separated list, nothing else.
+
+Resume:
+{resume_text[:4000]}
+"""
+    skills_raw = get_llm_response(api_key, skill_prompt)
+    candidate_skills = [s.strip().lower() for s in skills_raw.replace("\n", ",").split(",") if s.strip() and len(s.strip()) < 50]
+
+    # Search vector store for matching job descriptions
     resume_chunks = splitter.split_text(resume_text)
     if resume_chunks:
-        chunk_embeddings = [embeddings.embed_query(c) for c in resume_chunks]
+        chunk_embeddings = [embeddings.embed_query(chunk) for chunk in resume_chunks]
         resume_embedding = np.mean(chunk_embeddings, axis=0).tolist()
     else:
         resume_embedding = embeddings.embed_query(resume_text[:2000])
 
-    # Search job vector store
-    results_with_scores = job_vectorstore.similarity_search_with_score_by_vector(
-        resume_embedding, k=min(top_n, 20)
-    )
+    job_results = job_vectorstore.similarity_search_by_vector(resume_embedding, k=10)
+    job_context = "\n".join([doc.page_content for doc in job_results])
 
-    jobs = []
-    for doc, score in results_with_scores:
-        # FAISS returns L2 distance — convert to similarity percentage
-        similarity = float(round(max(0, (1 / (1 + score))) * 100, 1))
-        jobs.append({
-            "content": doc.page_content,
-            "metadata": doc.metadata if doc.metadata else {},
-            "similarity": similarity,
-        })
+    # Extract market-demanded skills via LLM
+    market_prompt = f"""Extract ALL required technical and professional skills from these job descriptions. Return them as a simple comma-separated list, nothing else.
 
-    # Use LLM to generate a brief relevance summary for the top results
-    if jobs:
-        top_jobs_text = "\n\n".join([
-            f"Job {i+1} (Similarity: {j['similarity']}%):\n{j['content'][:500]}"
-            for i, j in enumerate(jobs[:5])
-        ])
-
-        prompt = f"""You are a career advisor. Given the candidate's resume and top matching jobs from the database, write a brief 2-3 sentence analysis for EACH of the top 5 jobs explaining WHY it's a good match.
-
-Resume (key skills):
-{resume_text[:2000]}
-
-Top Matching Jobs:
-{top_jobs_text}
-
-For each job, write:
-**Job [number]**: [2-3 sentence explanation of why this is a good fit]
+Job Descriptions:
+{job_context[:5000]}
 """
-        summary = get_llm_response(api_key, prompt)
-    else:
-        summary = "No matching jobs found in the database."
+    market_raw = get_llm_response(api_key, market_prompt)
+    market_skills = [s.strip().lower() for s in market_raw.replace("\n", ",").split(",") if s.strip() and len(s.strip()) < 50]
+
+    # Deduplicate
+    candidate_set = set(candidate_skills)
+    market_set = set(market_skills)
+
+    matched = sorted(candidate_set & market_set)
+    missing = sorted(market_set - candidate_set)
+    extra = sorted(candidate_set - market_set)
+
+    match_pct = round(len(matched) / max(len(market_set), 1) * 100)
 
     return {
-        "jobs": jobs,
-        "summary": summary,
-        "total_found": len(jobs),
+        "candidate_skills": sorted(candidate_set),
+        "market_skills": sorted(market_set),
+        "matched_skills": matched,
+        "missing_skills": missing,
+        "extra_skills": extra,
+        "match_percentage": match_pct,
+    }
+
+
+@app.post("/ats_score")
+async def ats_score(
+    file: UploadFile = File(...),
+    api_key: str = Form(...)
+):
+    """Score resume for ATS compatibility across multiple categories."""
+    resume_text = extract_text_from_pdf(file.file)
+    resume_text = clean_text(resume_text)
+
+    prompt = f"""You are an ATS (Applicant Tracking System) expert. Analyze this resume for ATS compatibility.
+
+Resume:
+{resume_text[:4000]}
+
+Score each category out of its maximum points. For each category, provide a score and brief details.
+
+You MUST respond in EXACTLY this format (one per line):
+FORMATTING_SCORE: <number out of 25>
+FORMATTING_DETAILS: <brief explanation>
+SECTIONS_SCORE: <number out of 25>
+SECTIONS_DETAILS: <brief explanation>
+KEYWORDS_SCORE: <number out of 25>
+KEYWORDS_DETAILS: <brief explanation>
+READABILITY_SCORE: <number out of 25>
+READABILITY_DETAILS: <brief explanation>
+
+Scoring Guide:
+- FORMATTING (max 25): Clean layout, no tables/graphics/headers‐footers issues, standard fonts, proper spacing.
+- SECTIONS (max 25): Has standard sections (Contact, Summary, Experience, Education, Skills). Penalize missing sections.
+- KEYWORDS (max 25): Uses industry-standard terminology, action verbs, hard skills, technical terms.
+- READABILITY (max 25): Clear bullet points, concise sentences, no jargon overload, proper grammar.
+"""
+
+    feedback = get_llm_response(api_key, prompt)
+
+    # Parse scores
+    breakdown = {}
+    categories = {
+        "Formatting": ("FORMATTING_SCORE", "FORMATTING_DETAILS", 25),
+        "Sections": ("SECTIONS_SCORE", "SECTIONS_DETAILS", 25),
+        "Keywords": ("KEYWORDS_SCORE", "KEYWORDS_DETAILS", 25),
+        "Readability": ("READABILITY_SCORE", "READABILITY_DETAILS", 25),
+    }
+
+    total = 0
+    for cat_name, (score_key, detail_key, max_score) in categories.items():
+        score_match = re.search(rf"{score_key}[:\s]*(\d+)", feedback, re.IGNORECASE)
+        detail_match = re.search(rf"{detail_key}[:\s]*(.*)", feedback, re.IGNORECASE)
+        score = min(int(score_match.group(1)), max_score) if score_match else 0
+        details = detail_match.group(1).strip() if detail_match else "No details available."
+        total += score
+        breakdown[cat_name] = {"score": score, "max": max_score, "details": details}
+
+    return {
+        "percentage": total,
+        "breakdown": breakdown,
     }
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Job Search: Batch JD Matching
+# Job Search Endpoints
 # ═══════════════════════════════════════════════════════════════════════
+
+@app.post("/job_recommendations")
+async def job_recommendations(
+    file: UploadFile = File(...),
+    api_key: str = Form(...),
+    top_n: str = Form("5")
+):
+    """Find matching jobs from the vector store based on resume content."""
+    resume_text = extract_text_from_pdf(file.file)
+    resume_text = clean_text(resume_text)
+
+    n = int(top_n)
+
+    # Embed resume to find matching jobs
+    resume_chunks = splitter.split_text(resume_text)
+    if resume_chunks:
+        chunk_embeddings = [embeddings.embed_query(chunk) for chunk in resume_chunks]
+        resume_embedding = np.mean(chunk_embeddings, axis=0).tolist()
+    else:
+        resume_embedding = embeddings.embed_query(resume_text[:2000])
+
+    results = job_vectorstore.similarity_search_by_vector(resume_embedding, k=n)
+
+    jobs = []
+    for i, doc in enumerate(results):
+        # Approximate similarity — best match first, linearly decay
+        similarity = max(10, 100 - (i * int(70 / max(n, 1))))
+        jobs.append({
+            "content": doc.page_content[:2000],
+            "similarity": similarity,
+            "source": doc.metadata.get("source", "Unknown"),
+        })
+
+    # Sort by similarity descending
+    jobs.sort(key=lambda x: x["similarity"], reverse=True)
+
+    # Generate LLM summary analysis
+    job_summaries = "\n\n".join([f"Job {i+1} (Match: {j['similarity']}%): {j['content'][:500]}" for i, j in enumerate(jobs[:5])])
+    summary_prompt = f"""Briefly analyze how these top matching jobs align with the candidate's profile. 2-3 sentences max.
+
+Candidate Resume:
+{resume_text[:2000]}
+
+Top Matching Jobs:
+{job_summaries}
+"""
+    summary = get_llm_response(api_key, summary_prompt)
+
+    return {
+        "jobs": jobs,
+        "total_found": len(jobs),
+        "summary": summary,
+    }
+
+
 @app.post("/batch_jd_match")
 async def batch_jd_match(
     file: UploadFile = File(...),
     api_key: str = Form(...),
     job_descriptions: str = Form(...)
 ):
-    """Score a single resume against multiple JDs and rank them by fit."""
+    """Score resume against multiple pasted job descriptions."""
     resume_text = extract_text_from_pdf(file.file)
     resume_text = clean_text(resume_text)
 
-    # Parse JDs — split by the delimiter "---JD---"
-    jd_list = [jd.strip() for jd in job_descriptions.split("---JD---") if jd.strip()]
-
+    jds = [jd.strip() for jd in job_descriptions.split("---JD---") if jd.strip()]
     results = []
-    for i, jd in enumerate(jd_list):
-        prompt = f"""You are an expert resume-to-job matcher. Score how well this resume matches the job description.
+
+    for i, jd in enumerate(jds):
+        prompt = f"""You are an expert resume evaluator. Score this resume against the job description.
+
+Job Description:
+{jd[:2000]}
 
 Resume:
 {resume_text[:3000]}
 
-Job Description:
-{jd[:2500]}
-
-You MUST start your response with exactly these score lines (each on its own line, number 0-100):
+You MUST start your response with exactly these lines (each on its own line, number 0-100):
 MATCH_SCORE: <number>
 SKILLS_FIT: <number>
 EXPERIENCE_FIT: <number>
 
-Then write a SHORT 2-3 sentence summary of why this job is or isn't a good fit for this candidate.
+Then write a 1-2 sentence summary of the fit. No headings, no bullet points.
 """
         feedback = get_llm_response(api_key, prompt)
 
-        # Parse scores
-        scores = {}
-        for label, pattern in {
-            "match_score": r"MATCH_SCORE[:\s]*(\d{1,3})",
-            "skills_fit": r"SKILLS_FIT[:\s]*(\d{1,3})",
-            "experience_fit": r"EXPERIENCE_FIT[:\s]*(\d{1,3})",
-        }.items():
-            match = re.search(pattern, feedback, re.IGNORECASE)
-            scores[label] = min(int(match.group(1)), 100) if match else 0
+        score_match = re.search(r"MATCH_SCORE[:\s]*(\d{1,3})", feedback, re.IGNORECASE)
+        score = min(int(score_match.group(1)), 100) if score_match else 0
 
-        # Extract summary
+        skills_match = re.search(r"SKILLS_FIT[:\s]*(\d{1,3})", feedback, re.IGNORECASE)
+        skills_fit = min(int(skills_match.group(1)), 100) if skills_match else score
+
+        exp_match = re.search(r"EXPERIENCE_FIT[:\s]*(\d{1,3})", feedback, re.IGNORECASE)
+        experience_fit = min(int(exp_match.group(1)), 100) if exp_match else score
+
         summary = re.sub(
             r"(?:MATCH_SCORE|SKILLS_FIT|EXPERIENCE_FIT)[:\s]*\d{1,3}[/\d]*\s*",
             "", feedback
         ).strip()
 
-        # Extract a short title from the JD (first line or first 80 chars)
-        jd_title = jd.split('\n')[0].strip()[:80] or f"Job Description {i+1}"
+        # Extract a title from the first meaningful line of the JD
+        title_line = ""
+        for line in jd.split("\n"):
+            cleaned = line.strip()
+            # Skip blank lines and lines that are only dashes, symbols, or separators
+            if cleaned and not re.match(r'^[\-=_*#~|/\\>< ]+$', cleaned):
+                title_line = cleaned[:80]
+                break
+        if not title_line:
+            title_line = f"Job Description {i+1}"
 
         results.append({
             "jd_index": i + 1,
-            "jd_title": jd_title,
-            "jd_preview": jd[:200],
-            **scores,
+            "jd_title": title_line or f"Job Description {i+1}",
+            "match_score": score,
+            "skills_fit": skills_fit,
+            "experience_fit": experience_fit,
             "summary": summary,
+            "jd_preview": jd[:300],
         })
 
-    # Sort by match_score descending
     results.sort(key=lambda x: x["match_score"], reverse=True)
     return {"results": results}
 
