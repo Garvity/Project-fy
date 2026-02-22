@@ -1,0 +1,78 @@
+AI/ML Engineer at CompanyA
+We are seeking an AI/ML Engineer to design and deploy large-scale machine learning models. You will work on cutting-edge NLP, computer vision, and recommendation systems powering Google products used by billions.
+
+Requirements:
+- B.Tech/M.Tech in Computer Science or related field
+- 0-2 years of experience in ML/AI (internships count)
+- Proficiency in Python, TensorFlow or PyTorch
+- Experience with deep learning architectures (CNNs, RNNs, Transformers)
+- Strong understanding of NLP, computer vision, or recommendation systems
+- Experience with large-scale data processing (Spark, BigQuery)
+- Familiarity with ML pipelines and model deployment (MLflow, Kubeflow)
+- Knowledge of distributed computing and cloud platforms (GCP preferred)
+
+Nice to have:
+- Published research papers or open-source ML contributions
+- Experience with LLMs, RAG pipelines, or generative AI
+- Proficiency in C++ for performance-critical ML components
+
+---JD---
+
+Data Scientist at CompanyB
+CompanyB is hiring a Data Scientist to analyze massive datasets, build predictive models, and drive data-informed decisions across supply chain, customer experience, and advertising.
+
+Requirements:
+- Bachelor's or Master's degree in Statistics, Computer Science, Mathematics, or related field
+- Strong programming skills in Python and SQL
+- Experience with ML libraries: Scikit-learn, Pandas, NumPy, XGBoost
+- Proficiency in data visualization tools: Matplotlib, Seaborn, Tableau, or Power BI
+- Experience building and deploying predictive models
+- Strong understanding of statistical methods: regression, classification, clustering, A/B testing
+- Familiarity with AWS services (SageMaker, Redshift, S3)
+
+Nice to have:
+- Experience with deep learning frameworks (PyTorch, TensorFlow)
+- Knowledge of NLP techniques and text analytics
+- Experience with real-time data pipelines and streaming analytics
+- Strong communication skills for presenting insights to non-technical stakeholders
+
+---JD---
+
+Machine Learning Engineer at CompanyC
+Join CompantC's AI Platform team to build and scale ML infrastructure that powers Copilot, Azure AI, and enterprise solutions used by millions of developers worldwide.
+
+Requirements:
+- B.Tech/M.Tech in Computer Science, AI, or related field
+- Proficiency in Python, C++, or C#
+- Experience with ML frameworks: PyTorch, TensorFlow, ONNX
+- Strong software engineering skills: REST APIs, microservices, CI/CD
+- Experience with cloud platforms (Azure preferred)
+- Knowledge of MLOps practices: model versioning, monitoring, A/B testing
+- Understanding of LLMs, fine-tuning, and prompt engineering
+- Experience with vector databases and semantic search
+
+Nice to have:
+- Contributions to open-source ML projects
+- Experience with LangChain, LlamaIndex, or similar LLM frameworks
+- Knowledge of responsible AI practices and model fairness
+- Full-stack development experience (React, Node.js)
+
+---JD---
+
+AI Research Intern at CompanyD
+CompanyD is looking for an AI Research Intern to work on computer vision, NLP, and multimodal AI systems. You will collaborate with world-class researchers on projects that push the boundaries of AI.
+
+Requirements:
+- Currently pursuing B.Tech/M.Tech/PhD in Computer Science, AI, or related field
+- Strong foundation in deep learning, neural networks, and optimization
+- Proficiency in Python and PyTorch
+- Experience with computer vision (object detection, image segmentation, YOLO, OpenCV)
+- Familiarity with NLP techniques (text classification, embeddings, transformers)
+- Strong mathematical foundation in linear algebra, probability, and calculus
+- Ability to read and implement research papers
+
+Nice to have:
+- Published papers at top conferences (NeurIPS, ICML, CVPR, ACL)
+- Experience with multimodal models (vision + language)
+- Familiarity with distributed training across multiple GPUs
+- Open-source contributions or personal ML projects on GitHub

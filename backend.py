@@ -2,11 +2,10 @@ import os
 import re
 import numpy as np
 from PyPDF2 import PdfReader
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, File, HTTPException, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
-import json
-import bcrypt
+
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -48,92 +47,7 @@ resume_vectorstore = FAISS.load_local(
     "vector_store/resume_faiss", embeddings, allow_dangerous_deserialization=True
 )
 
-# ═══════════════════════════════════════════════════════════════════════
-# User Auth Helpers
-# ═══════════════════════════════════════════════════════════════════════
-USERS_FILE = "users.json"
 
-
-def load_users():
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, "r") as f:
-            return json.load(f)
-    return {"users": {}}
-
-
-def save_users(data):
-    with open(USERS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-
-def get_user_resume_store(username: str):
-    """Load or create a per-user FAISS resume vector store."""
-    user_store_path = f"vector_store/users/{username}/resume_faiss"
-    if os.path.exists(user_store_path):
-        return FAISS.load_local(user_store_path, embeddings, allow_dangerous_deserialization=True)
-    else:
-        from langchain.schema import Document
-        placeholder = Document(page_content="placeholder", metadata={"source": "init"})
-        store = FAISS.from_documents([placeholder], embeddings)
-        os.makedirs(user_store_path, exist_ok=True)
-        store.save_local(user_store_path)
-        return store
-
-
-def save_user_resume_store(username: str, store):
-    """Save user's FAISS store to disk."""
-    user_store_path = f"vector_store/users/{username}/resume_faiss"
-    os.makedirs(user_store_path, exist_ok=True)
-    store.save_local(user_store_path)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Authentication Endpoints
-# ═══════════════════════════════════════════════════════════════════════
-@app.post("/signup")
-async def signup(
-    username: str = Form(...),
-    email: str = Form(...),
-    password: str = Form(...)
-):
-    data = load_users()
-
-    # 1. Check if username exists
-    if username in data["users"]:
-        return {"success": False, "message": "Username already exists."}
-
-    # 2. Check if email exists
-    for user_data in data["users"].values():
-        if user_data.get("email") == email:
-            return {"success": False, "message": "Email already registered."}
-
-    # 3. Validate Password Strength
-    password_pattern = r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$"
-    if not re.match(password_pattern, password):
-        return {
-            "success": False,
-            "message": "Password must be at least 8 chars with uppercase, lowercase, number, and special character."
-        }
-
-    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-    data["users"][username] = {
-        "password_hash": hashed,
-        "email": email
-    }
-    save_users(data)
-    get_user_resume_store(username)
-    return {"success": True, "message": f"Account created for {username}! Please log in."}
-
-
-@app.post("/login")
-async def login(username: str = Form(...), password: str = Form(...)):
-    data = load_users()
-    user = data["users"].get(username)
-    if not user:
-        return {"success": False, "message": "User not found."}
-    if bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
-        return {"success": True, "message": f"Welcome back, {username}!", "username": username}
-    return {"success": False, "message": "Incorrect password."}
 
 
 #  Extract text from uploaded PDF resume
@@ -290,57 +204,50 @@ async def chat_with_resume(
     query: str = Form(...),
     api_key: str = Form(...),
     job_description: str = Form(""),
-    chat_source: str = Form("all"),
-    username: str = Form(""),
     file: UploadFile = File(...)
 ):  
     # ── Extract and clean the user's uploaded resume ──
     resume_text = extract_text_from_pdf(file.file)
     resume_text = clean_text(resume_text)
 
-    # ── Build context based on the selected chat_source ──
+    # ── Build context from all sources ──
     context_sections = []
 
-    # ALWAYS include the user's uploaded resume so the LLM knows who the candidate is
+    # Always include the user's uploaded resume
     context_sections.append(
         f"--- Candidate's Resume (uploaded by user) ---\n{resume_text[:4000]}"
     )
 
-    if chat_source in ("all", "job") and job_description.strip():
+    # Include job description if provided
+    if job_description.strip():
         jd_cleaned = clean_text(job_description)
         context_sections.append(
             f"--- Job Description (provided by user) ---\n{jd_cleaned[:3000]}"
         )
 
-    if chat_source in ("all", "vectorstore"):
-        # ── Embed the RESUME CONTENT (not the query!) to find relevant matches ──
-        # This ensures an AI/ML resume finds AI/ML jobs, not random PHP/WordPress ones.
-        resume_chunks = splitter.split_text(resume_text)
-        if resume_chunks:
-            chunk_embeddings = [embeddings.embed_query(chunk) for chunk in resume_chunks]
-            resume_embedding = np.mean(chunk_embeddings, axis=0).tolist()
-        else:
-            resume_embedding = embeddings.embed_query(resume_text[:2000])
+    # Search vector stores for matching context
+    resume_chunks = splitter.split_text(resume_text)
+    if resume_chunks:
+        chunk_embeddings = [embeddings.embed_query(chunk) for chunk in resume_chunks]
+        resume_embedding = np.mean(chunk_embeddings, axis=0).tolist()
+    else:
+        resume_embedding = embeddings.embed_query(resume_text[:2000])
 
-        # Search for job descriptions that semantically match the resume's skills/content
-        job_results = job_vectorstore.similarity_search_by_vector(resume_embedding, k=5)
-        # Search for similar resumes — use user's store if logged in, else global
-        if username:
-            user_store = get_user_resume_store(username)
-            resume_results = user_store.similarity_search_by_vector(resume_embedding, k=3)
-        else:
-            resume_results = resume_vectorstore.similarity_search_by_vector(resume_embedding, k=3)
+    # Search for job descriptions that semantically match the resume's skills/content
+    job_results = job_vectorstore.similarity_search_by_vector(resume_embedding, k=5)
+    # Search for similar resumes from the global store
+    resume_results = resume_vectorstore.similarity_search_by_vector(resume_embedding, k=3)
 
-        if job_results:
-            job_context = "\n\n".join([doc.page_content for doc in job_results])
-            context_sections.append(
-                f"--- Matching Job Descriptions (from database, matched to candidate's skills) ---\n{job_context}"
-            )
-        if resume_results:
-            resume_context = "\n\n".join([doc.page_content for doc in resume_results])
-            context_sections.append(
-                f"--- Similar Resumes (from database, for comparison) ---\n{resume_context}"
-            )
+    if job_results:
+        job_context = "\n\n".join([doc.page_content for doc in job_results])
+        context_sections.append(
+            f"--- Matching Job Descriptions (from database, matched to candidate's skills) ---\n{job_context}"
+        )
+    if resume_results:
+        resume_context = "\n\n".join([doc.page_content for doc in resume_results])
+        context_sections.append(
+            f"--- Similar Resumes (from database, for comparison) ---\n{resume_context}"
+        )
 
     combined_context = "\n\n".join(context_sections)
 
@@ -371,9 +278,8 @@ Instructions:
 @app.post("/save_resume_to_vectorstore")
 async def save_resume_to_vectorstore(
     file: UploadFile = File(...),
-    username: str = Form("")
 ):
-    """Extract text from uploaded resume PDF, chunk it, and add to the user's FAISS store."""
+    """Extract text from uploaded resume PDF, chunk it, and add to the global FAISS store."""
     global resume_vectorstore
     try:
         resume_text = extract_text_from_pdf(file.file)
@@ -392,13 +298,8 @@ async def save_resume_to_vectorstore(
             for chunk in chunks
         ]
 
-        if username:
-            user_store = get_user_resume_store(username)
-            user_store.add_documents(docs)
-            save_user_resume_store(username, user_store)
-        else:
-            resume_vectorstore.add_documents(docs)
-            resume_vectorstore.save_local("vector_store/resume_faiss")
+        resume_vectorstore.add_documents(docs)
+        resume_vectorstore.save_local("vector_store/resume_faiss")
 
         return {
             "success": True,
@@ -774,51 +675,155 @@ async def ats_score(
 ):
     """Score resume for ATS compatibility across multiple categories."""
     resume_text = extract_text_from_pdf(file.file)
-    resume_text = clean_text(resume_text)
+    # Light cleaning only — preserve case, emails, phone numbers, URLs, special chars
+    resume_text = re.sub(r"\t", " ", resume_text)
+    resume_text = re.sub(r"(\n|\r)+", "\n", resume_text)
+    resume_text = re.sub(r" +", " ", resume_text).strip()
 
-    prompt = f"""You are an ATS (Applicant Tracking System) expert. Analyze this resume for ATS compatibility.
+    # Pre-detect contact info with regex for accurate scoring
+    has_email = bool(re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", resume_text))
+    has_phone = bool(re.search(r"(\+?\d[\d\s\-().]{7,}\d)", resume_text))
+    has_linkedin = bool(re.search(r"linkedin", resume_text, re.IGNORECASE))
+    has_github = bool(re.search(r"github", resume_text, re.IGNORECASE))
+
+    contact_items = []
+    contact_items.append(f"Email: {'FOUND' if has_email else 'NOT FOUND'}")
+    contact_items.append(f"Phone: {'FOUND' if has_phone else 'NOT FOUND'}")
+    contact_items.append(f"LinkedIn: {'FOUND' if has_linkedin else 'NOT FOUND'}")
+    contact_items.append(f"GitHub: {'FOUND' if has_github else 'NOT FOUND'}")
+    contact_summary = " | ".join(contact_items)
+
+    # Calculate contact info score deterministically (not LLM-dependent)
+    contact_score = 0
+    if has_email: contact_score += 6
+    if has_phone: contact_score += 6
+    if has_linkedin: contact_score += 4
+    if has_github: contact_score += 4
+    contact_details_parts = []
+    if has_email: contact_details_parts.append("Email found")
+    else: contact_details_parts.append("Email missing")
+    if has_phone: contact_details_parts.append("Phone found")
+    else: contact_details_parts.append("Phone missing")
+    if has_linkedin: contact_details_parts.append("LinkedIn found")
+    else: contact_details_parts.append("LinkedIn missing")
+    if has_github: contact_details_parts.append("GitHub found")
+    else: contact_details_parts.append("GitHub missing")
+    contact_details = ". ".join(contact_details_parts) + "."
+
+    # Count words for resume length assessment
+    word_count = len(resume_text.split())
+
+    prompt = f"""You are an extremely strict ATS (Applicant Tracking System) auditor used by Fortune 500 companies. Your job is to find EVERY flaw. No resume is perfect — always find issues to deduct for.
+
+VERIFIED CONTACT INFO: {contact_summary}
+WORD COUNT: {word_count} words
 
 Resume:
 {resume_text[:4000]}
 
-Score each category out of its maximum points. For each category, provide a score and brief details.
+Respond in EXACTLY this format (one per line):
+SECTION_STRUCTURE_SCORE: <number out of 25>
+SECTION_STRUCTURE_DETAILS: <list specific issues found>
+RESUME_LENGTH_SCORE: <number out of 15>
+RESUME_LENGTH_DETAILS: <list specific issues found>
+IMPACT_METRICS_SCORE: <number out of 15>
+IMPACT_METRICS_DETAILS: <list specific issues found>
+KEYWORD_RELEVANCE_SCORE: <number out of 15>
+KEYWORD_RELEVANCE_DETAILS: <list specific issues found>
+FORMATTING_READABILITY_SCORE: <number out of 10>
+FORMATTING_READABILITY_DETAILS: <list specific issues found>
 
-You MUST respond in EXACTLY this format (one per line):
-FORMATTING_SCORE: <number out of 25>
-FORMATTING_DETAILS: <brief explanation>
-SECTIONS_SCORE: <number out of 25>
-SECTIONS_DETAILS: <brief explanation>
-KEYWORDS_SCORE: <number out of 25>
-KEYWORDS_DETAILS: <brief explanation>
-READABILITY_SCORE: <number out of 25>
-READABILITY_DETAILS: <brief explanation>
+STRICT SCORING RULES:
+- Section Structure: NEVER give more than 22. A score above 20 is nearly impossible.
+- Resume Length: NEVER give more than 13. Most resumes are either too long or too short.
+- Impact & Metrics: NEVER give more than 12. Most candidates fail to quantify achievements properly.
+- Keyword Relevance: NEVER give more than 13. Keywords without context should be penalized.
+- Formatting & Readability: NEVER give more than 8. There are always formatting improvements to be made.
+- Always cite at least 2-3 specific issues per category to justify deductions.
 
-Scoring Guide:
-- FORMATTING (max 25): Clean layout, no tables/graphics/headers‐footers issues, standard fonts, proper spacing.
-- SECTIONS (max 25): Has standard sections (Contact, Summary, Experience, Education, Skills). Penalize missing sections.
-- KEYWORDS (max 25): Uses industry-standard terminology, action verbs, hard skills, technical terms.
-- READABILITY (max 25): Clear bullet points, concise sentences, no jargon overload, proper grammar.
+SECTION STRUCTURE (max 25):
+Required sections: Contact Info, Professional Summary/Objective, Work Experience, Education, Skills. Deduct heavily for: missing sections, unconventional section names, poor ordering, missing dates/locations in experience/education, lack of detail. Every missing standard section = at least 5 point deduction.
+
+RESUME LENGTH (max 15):
+Ideal: 300-800 words for entry-level, 500-1000 for mid-level. This resume has {word_count} words. Deduct if too short (lacks substance) or too verbose (wastes recruiter time). Only a perfectly sized resume scores above 12.
+
+IMPACT & METRICS (max 15):
+Be VERY strict here. Every bullet point should have quantified results (numbers, percentages, dollar amounts, user counts). Deduct for: vague descriptions ("improved performance"), missing metrics, generic achievements, lack of measurable results. Most resumes score 7-10 here.
+
+KEYWORD RELEVANCE (max 15):
+Check for: technical skills demonstrated in context (not just listed), industry-specific terminology, strong action verbs, relevant certifications. Deduct for: skills listed without usage context, missing industry buzzwords, weak or repetitive action verbs, generic soft skills.
+
+FORMATTING & READABILITY (max 10):
+Deduct for: long paragraphs instead of bullets, passive voice, inconsistent tense, buzzword stuffing, poor grammar, ATS-breaking elements (tables, columns, graphics, text boxes), inconsistent formatting.
 """
 
     feedback = get_llm_response(api_key, prompt)
 
     # Parse scores
     breakdown = {}
+
+    # Contact Info is scored deterministically (not by LLM)
+    breakdown["Contact Info"] = {"score": contact_score, "max": 20, "details": contact_details}
+
+    # Section Structure is scored deterministically (not by LLM)
+    resume_lower = resume_text.lower()
+    required_sections = {
+        "Education": bool(re.search(r"\beducation\b", resume_lower)),
+        "Experience": bool(re.search(r"\b(experience|work\s*experience|professional\s*experience|internship)\b", resume_lower)),
+        "Skills": bool(re.search(r"\b(skills|technical\s*skills|core\s*competencies)\b", resume_lower)),
+        "Projects": bool(re.search(r"\b(projects|personal\s*projects|academic\s*projects)\b", resume_lower)),
+        "Summary": bool(re.search(r"\b(summary|objective|profile|about\s*me)\b", resume_lower)),
+    }
+    section_score = 25
+    section_details_parts = []
+    for section_name, found in required_sections.items():
+        if found:
+            section_details_parts.append(f"{section_name} found")
+        else:
+            section_score -= 5
+            section_details_parts.append(f"{section_name} missing")
+    section_details = ". ".join(section_details_parts) + "."
+    breakdown["Section Structure"] = {"score": section_score, "max": 25, "details": section_details}
+
+    # LLM-scored categories
     categories = {
-        "Formatting": ("FORMATTING_SCORE", "FORMATTING_DETAILS", 25),
-        "Sections": ("SECTIONS_SCORE", "SECTIONS_DETAILS", 25),
-        "Keywords": ("KEYWORDS_SCORE", "KEYWORDS_DETAILS", 25),
-        "Readability": ("READABILITY_SCORE", "READABILITY_DETAILS", 25),
+        "Resume Length": ("RESUME_LENGTH_SCORE", "RESUME_LENGTH_DETAILS", 15),
+        "Impact & Metrics": ("IMPACT_METRICS_SCORE", "IMPACT_METRICS_DETAILS", 15),
+        "Keyword Relevance": ("KEYWORD_RELEVANCE_SCORE", "KEYWORD_RELEVANCE_DETAILS", 15),
+        "Formatting & Readability": ("FORMATTING_READABILITY_SCORE", "FORMATTING_READABILITY_DETAILS", 10),
     }
 
-    total = 0
+    total = contact_score + section_score
     for cat_name, (score_key, detail_key, max_score) in categories.items():
         score_match = re.search(rf"{score_key}[:\s]*(\d+)", feedback, re.IGNORECASE)
         detail_match = re.search(rf"{detail_key}[:\s]*(.*)", feedback, re.IGNORECASE)
+
+        # Flexible fallback for Formatting & Readability (LLM often outputs different key names)
+        if not score_match and "FORMATTING" in score_key:
+            for pattern in [
+                r"FORMATTING[\s_&AND]*READABILITY[\s_]*SCORE[:\s]*(\d+)",
+                r"FORMATTING[:\s]*(\d+)",
+                r"READABILITY[:\s]*(\d+)",
+            ]:
+                score_match = re.search(pattern, feedback, re.IGNORECASE)
+                if score_match:
+                    break
+        if not detail_match and "FORMATTING" in detail_key:
+            for pattern in [
+                r"FORMATTING[\s_&AND]*READABILITY[\s_]*DETAILS[:\s]*(.*)",
+                r"FORMATTING_DETAILS[:\s]*(.*)",
+            ]:
+                detail_match = re.search(pattern, feedback, re.IGNORECASE)
+                if detail_match:
+                    break
+
         score = min(int(score_match.group(1)), max_score) if score_match else 0
         details = detail_match.group(1).strip() if detail_match else "No details available."
         total += score
         breakdown[cat_name] = {"score": score, "max": max_score, "details": details}
+
+    # Hard cap total at 95% — a perfect score should never be possible
+    total = min(total, 95)
 
     return {
         "percentage": total,
@@ -897,6 +902,19 @@ async def batch_jd_match(
     jds = [jd.strip() for jd in job_descriptions.split("---JD---") if jd.strip()]
     results = []
 
+    def parse_score(text, key):
+        """Try multiple patterns to extract a score for a given key."""
+        patterns = [
+            rf"{key}[:\s]*(\d{{1,3}})",                # MATCH_SCORE: 75
+            rf"{key}[:\s]*(\d{{1,3}})\s*/\s*\d+",      # MATCH_SCORE: 75/100
+            rf"{key}[:\s]*(\d{{1,3}})%",                # MATCH_SCORE: 75%
+        ]
+        for pat in patterns:
+            m = re.search(pat, text, re.IGNORECASE)
+            if m:
+                return min(int(m.group(1)), 100)
+        return None
+
     for i, jd in enumerate(jds):
         prompt = f"""You are an expert resume evaluator. Score this resume against the job description.
 
@@ -906,7 +924,7 @@ Job Description:
 Resume:
 {resume_text[:3000]}
 
-You MUST start your response with exactly these lines (each on its own line, number 0-100):
+You MUST start your response with EXACTLY these three lines (each on its own line, numbers 0-100, no slashes, no percent signs):
 MATCH_SCORE: <number>
 SKILLS_FIT: <number>
 EXPERIENCE_FIT: <number>
@@ -915,17 +933,48 @@ Then write a 1-2 sentence summary of the fit. No headings, no bullet points.
 """
         feedback = get_llm_response(api_key, prompt)
 
-        score_match = re.search(r"MATCH_SCORE[:\s]*(\d{1,3})", feedback, re.IGNORECASE)
-        score = min(int(score_match.group(1)), 100) if score_match else 0
+        score = parse_score(feedback, "MATCH_SCORE")
+        skills_fit = parse_score(feedback, "SKILLS_FIT")
+        experience_fit = parse_score(feedback, "EXPERIENCE_FIT")
 
-        skills_match = re.search(r"SKILLS_FIT[:\s]*(\d{1,3})", feedback, re.IGNORECASE)
-        skills_fit = min(int(skills_match.group(1)), 100) if skills_match else score
+        # If main score failed to parse, retry with a simpler prompt
+        if score is None:
+            retry_prompt = f"""Score this resume against the job description on a scale of 0 to 100.
 
-        exp_match = re.search(r"EXPERIENCE_FIT[:\s]*(\d{1,3})", feedback, re.IGNORECASE)
-        experience_fit = min(int(exp_match.group(1)), 100) if exp_match else score
+Job Description (first 500 chars):
+{jd[:500]}
+
+Resume (first 500 chars):
+{resume_text[:500]}
+
+Reply with ONLY this format, nothing else:
+MATCH_SCORE: <number>
+SKILLS_FIT: <number>
+EXPERIENCE_FIT: <number>
+"""
+            retry_feedback = get_llm_response(api_key, retry_prompt)
+            score = parse_score(retry_feedback, "MATCH_SCORE")
+            if skills_fit is None:
+                skills_fit = parse_score(retry_feedback, "SKILLS_FIT")
+            if experience_fit is None:
+                experience_fit = parse_score(retry_feedback, "EXPERIENCE_FIT")
+
+            # Use retry summary if original had no usable text
+            if score is not None:
+                feedback = retry_feedback
+
+        # Final fallback — if still no score, try to find ANY number in the response
+        if score is None:
+            any_num = re.search(r"(\d{1,3})", feedback)
+            score = min(int(any_num.group(1)), 100) if any_num else 30
+
+        if skills_fit is None:
+            skills_fit = score
+        if experience_fit is None:
+            experience_fit = score
 
         summary = re.sub(
-            r"(?:MATCH_SCORE|SKILLS_FIT|EXPERIENCE_FIT)[:\s]*\d{1,3}[/\d]*\s*",
+            r"(?:MATCH_SCORE|SKILLS_FIT|EXPERIENCE_FIT)[:\s]*\d{1,3}[/\d%]*\s*",
             "", feedback
         ).strip()
 
@@ -933,8 +982,7 @@ Then write a 1-2 sentence summary of the fit. No headings, no bullet points.
         title_line = ""
         for line in jd.split("\n"):
             cleaned = line.strip()
-            # Skip blank lines and lines that are only dashes, symbols, or separators
-            if cleaned and not re.match(r'^[\-=_*#~|/\\>< ]+$', cleaned):
+            if cleaned and not re.match(r'^[\-=_*#~|/\\><: ]+$', cleaned):
                 title_line = cleaned[:80]
                 break
         if not title_line:

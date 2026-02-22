@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 # ─── Page Config ──────────────────────────────────────────────────────
 st.set_page_config(page_title="Resume Analyzer Pro", page_icon="📄", layout="wide")
 
+
 # ─── Custom CSS ───────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -49,80 +50,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ─── Authentication Gate ──────────────────────────────────────────────
-if "logged_in_user" not in st.session_state:
-    st.session_state.logged_in_user = None
-
-if st.session_state.logged_in_user is None:
-    st.markdown("""<h1 style='text-align: center; margin-top: 2rem;'>📄 Resume Analyzer Pro</h1>
-    <p style='text-align: center; color: #94a3b8;'>Sign in or create an account to get started</p>""", unsafe_allow_html=True)
-
-    auth_tab1, auth_tab2 = st.tabs(["🔑 Login", "📝 Sign Up"])
-
-    with auth_tab1:
-        login_user = st.text_input("Username", key="login_user")
-        login_pass = st.text_input("Password", type="password", key="login_pass")
-        if st.button("Login", use_container_width=True, type="primary"):
-            if login_user and login_pass:
-                resp = requests.post("http://localhost:8000/login", data={
-                    "username": login_user, "password": login_pass
-                })
-                if resp.status_code == 200:
-                    result = resp.json()
-                    if result.get("success"):
-                        st.session_state.logged_in_user = login_user
-                        st.success(result["message"])
-                        st.rerun()
-                    else:
-                        st.error(result.get("message", "Login failed."))
-            else:
-                st.warning("Please enter both username and password.")
-
-    with auth_tab2:
-        signup_user = st.text_input("Choose a Username", key="signup_user")
-        signup_email = st.text_input("Enter your Email", key="signup_email")
-        signup_pass = st.text_input("Choose a Password", type="password", key="signup_pass")
-        st.caption("Password must be at least 8 characters, include uppercase, lowercase, number, and special character (@$!%*?&).")
-        signup_pass2 = st.text_input("Confirm Password", type="password", key="signup_pass2")
-
-        if st.button("Sign Up", use_container_width=True, type="primary"):
-            password_pattern = r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$"
-
-            if not signup_user or not signup_pass or not signup_email:
-                st.warning("Please fill in all fields.")
-            elif not re.match(r"[^@]+@[^@]+\.[^@]+", signup_email):
-                st.error("Please enter a valid email address.")
-            elif signup_pass != signup_pass2:
-                st.error("Passwords do not match.")
-            elif not re.match(password_pattern, signup_pass):
-                st.error("Password is too weak. It must be 8+ chars with uppercase, lowercase, number, and special char.")
-            else:
-                resp = requests.post("http://localhost:8000/signup", data={
-                    "username": signup_user,
-                    "email": signup_email,
-                    "password": signup_pass
-                })
-                if resp.status_code == 200:
-                    result = resp.json()
-                    if result.get("success"):
-                        st.success("✅ Account created successfully! Please go to the Login tab to sign in.")
-                    else:
-                        st.error(result.get("message", "Signup failed."))
-                else:
-                    st.error(f"Server error: {resp.text}")
-
-    st.stop()
-
-# ─── User is authenticated — proceed ─────────────────────────────────
-current_user = st.session_state.logged_in_user
 
 # ─── Sidebar ──────────────────────────────────────────────────────────
-st.sidebar.markdown(f"👤 **{current_user}**")
-if st.sidebar.button("🚪 Logout"):
-    st.session_state.logged_in_user = None
-    st.rerun()
-st.sidebar.markdown("---")
 st.sidebar.title("🔑 API Configuration")
+
 api_key_input = st.sidebar.text_input("Enter your Hugging Face API Key", type="password")
 if api_key_input:
     st.session_state["api_key"] = api_key_input
@@ -132,7 +63,7 @@ if api_key:
 
 page = st.sidebar.radio(
     "Select Page",
-    ["About", "Resume Details", "Resume Matching", "Chat with Resume and Job Description", "Compare Resumes", "Resume Insights", "Resume Enhancement", "Job Search"],
+    ["About", "Resume Details", "Resume Matching", "Chat with Resume and Job Description", "Compare Resumes", "Resume Insights", "Resume Enhancement", "Batch JD Matching"],
     index=0,
 )
 
@@ -328,24 +259,28 @@ if page == "Resume Details":
             data = {"api_key": api_key}
             result = call_backend("resume_details", uploaded_file, data)
         if result:
-            st.subheader("Extracted Resume Sections")
-            feedback = result.get("llm_feedback", "")
-            feedback = re.sub(r"\*\*(.+?)\*\*\s*:\s*", r"**\1** ", feedback)
-            # Render with markdown so **bold** headings display prominently
-            st.markdown("""
-            <style>
-                .resume-section strong {
-                    font-size: 1.25rem;
-                    color: #60a5fa;
-                    display: block;
-                    margin-top: 1rem;
-                    margin-bottom: 0.25rem;
-                    border-left: 3px solid #818cf8;
-                    padding-left: 0.5rem;
-                }
-            </style>
-            """, unsafe_allow_html=True)
-            st.markdown(f'<div class="resume-section">\n\n{feedback}\n\n</div>', unsafe_allow_html=True)
+            st.session_state["resume_details_result"] = result
+
+    if st.session_state.get("resume_details_result"):
+        result = st.session_state["resume_details_result"]
+        st.subheader("Extracted Resume Sections")
+        feedback = result.get("llm_feedback", "")
+        feedback = re.sub(r"\*\*(.+?)\*\*\s*:\s*", r"**\1** ", feedback)
+        # Render with markdown so **bold** headings display prominently
+        st.markdown("""
+        <style>
+            .resume-section strong {
+                font-size: 1.25rem;
+                color: #60a5fa;
+                display: block;
+                margin-top: 1rem;
+                margin-bottom: 0.25rem;
+                border-left: 3px solid #818cf8;
+                padding-left: 0.5rem;
+            }
+        </style>
+        """, unsafe_allow_html=True)
+        st.markdown(f'<div class="resume-section">\n\n{feedback}\n\n</div>', unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -381,76 +316,80 @@ elif page == "Resume Matching":
             result = call_backend("resume_matching", uploaded_file, data)
 
         if result and result.get("llm_feedback"):
-            feedback = result["llm_feedback"]
+            st.session_state["matching_result"] = result
 
-            # ── Extract scores from text using regex ──
-            score_patterns = {
-                "Total Match": r"TOTAL_MATCH_SCORE[:\s]*(\d{1,3})",
-                "Skills": r"SKILLS_SCORE[:\s]*(\d{1,3})",
-                "Experience": r"EXPERIENCE_SCORE[:\s]*(\d{1,3})",
-                "Education": r"EDUCATION_SCORE[:\s]*(\d{1,3})",
-                "Projects": r"PROJECTS_SCORE[:\s]*(\d{1,3})",
+    if st.session_state.get("matching_result"):
+        result = st.session_state["matching_result"]
+        feedback = result["llm_feedback"]
+
+        # ── Extract scores from text using regex ──
+        score_patterns = {
+            "Total Match": r"TOTAL_MATCH_SCORE[:\s]*(\d{1,3})",
+            "Skills": r"SKILLS_SCORE[:\s]*(\d{1,3})",
+            "Experience": r"EXPERIENCE_SCORE[:\s]*(\d{1,3})",
+            "Education": r"EDUCATION_SCORE[:\s]*(\d{1,3})",
+            "Projects": r"PROJECTS_SCORE[:\s]*(\d{1,3})",
+        }
+        scores = {}
+        for label, pattern in score_patterns.items():
+            match = re.search(pattern, feedback, re.IGNORECASE)
+            scores[label] = min(int(match.group(1)), 100) if match else 0
+
+        overall = scores.get("Total Match", 0)
+
+        # ── Remove score lines from feedback text for clean display ──
+        clean_feedback = re.sub(
+            r"(?:TOTAL_MATCH_SCORE|SKILLS_SCORE|EXPERIENCE_SCORE|EDUCATION_SCORE|PROJECTS_SCORE)[:\s]*\d{1,3}[/\d]*\s*",
+            "", feedback
+        ).strip()
+
+        # ── Display gauge chart if we found an overall score ──
+        if overall > 0:
+            st.plotly_chart(create_gauge_chart(overall), use_container_width=True)
+
+            # ── Category Score Cards ──
+            category_scores = {k: v for k, v in scores.items() if k != "Total Match"}
+            if any(v > 0 for v in category_scores.values()):
+                st.markdown("#### 🏆 Category Scores")
+                cols = st.columns(len(category_scores))
+                for i, (cat, score) in enumerate(category_scores.items()):
+                    with cols[i]:
+                        color = get_score_color(score)
+                        st.markdown(
+                            f"""<div class="score-card">
+                                <div class="score-number" style="color:{color}">{score}%</div>
+                                <div class="score-label">{cat}</div>
+                            </div>""",
+                            unsafe_allow_html=True,
+                        )
+
+                # ── Charts ──
+                col_radar, col_bar = st.columns(2)
+                with col_radar:
+                    st.subheader("📊 Radar Chart")
+                    st.plotly_chart(create_radar_chart(category_scores), use_container_width=True)
+                with col_bar:
+                    st.subheader("📈 Category Breakdown")
+                    st.plotly_chart(create_bar_chart(category_scores), use_container_width=True)
+
+            st.markdown("---")
+
+        
+        st.subheader("📝 Detailed Feedback")
+        st.markdown("""
+        <style>
+            .resume-section strong {
+                font-size: 1.25rem;
+                color: #60a5fa;
+                display: block;
+                margin-top: 1rem;
+                margin-bottom: 0.25rem;
+                border-left: 3px solid #818cf8;
+                padding-left: 0.5rem;
             }
-            scores = {}
-            for label, pattern in score_patterns.items():
-                match = re.search(pattern, feedback, re.IGNORECASE)
-                scores[label] = min(int(match.group(1)), 100) if match else 0
-
-            overall = scores.get("Total Match", 0)
-
-            # ── Remove score lines from feedback text for clean display ──
-            clean_feedback = re.sub(
-                r"(?:TOTAL_MATCH_SCORE|SKILLS_SCORE|EXPERIENCE_SCORE|EDUCATION_SCORE|PROJECTS_SCORE)[:\s]*\d{1,3}[/\d]*\s*",
-                "", feedback
-            ).strip()
-
-            # ── Display gauge chart if we found an overall score ──
-            if overall > 0:
-                st.plotly_chart(create_gauge_chart(overall), use_container_width=True)
-
-                # ── Category Score Cards ──
-                category_scores = {k: v for k, v in scores.items() if k != "Total Match"}
-                if any(v > 0 for v in category_scores.values()):
-                    st.markdown("#### 🏆 Category Scores")
-                    cols = st.columns(len(category_scores))
-                    for i, (cat, score) in enumerate(category_scores.items()):
-                        with cols[i]:
-                            color = get_score_color(score)
-                            st.markdown(
-                                f"""<div class="score-card">
-                                    <div class="score-number" style="color:{color}">{score}%</div>
-                                    <div class="score-label">{cat}</div>
-                                </div>""",
-                                unsafe_allow_html=True,
-                            )
-
-                    # ── Charts ──
-                    col_radar, col_bar = st.columns(2)
-                    with col_radar:
-                        st.subheader("📊 Radar Chart")
-                        st.plotly_chart(create_radar_chart(category_scores), use_container_width=True)
-                    with col_bar:
-                        st.subheader("📈 Category Breakdown")
-                        st.plotly_chart(create_bar_chart(category_scores), use_container_width=True)
-
-                st.markdown("---")
-
-            
-            st.subheader("📝 Detailed Feedback")
-            st.markdown("""
-            <style>
-                .resume-section strong {
-                    font-size: 1.25rem;
-                    color: #60a5fa;
-                    display: block;
-                    margin-top: 1rem;
-                    margin-bottom: 0.25rem;
-                    border-left: 3px solid #818cf8;
-                    padding-left: 0.5rem;
-                }
-            </style>
-            """, unsafe_allow_html=True)
-            st.markdown(f'<div class="resume-section">\n\n{clean_feedback}\n\n</div>', unsafe_allow_html=True)
+        </style>
+        """, unsafe_allow_html=True)
+        st.markdown(f'<div class="resume-section">\n\n{clean_feedback}\n\n</div>', unsafe_allow_html=True)
 
 
 
@@ -461,7 +400,7 @@ elif page == "Chat with Resume and Job Description":
     st.header("💬 Chat with Resume & Job Description")
     st.markdown("Ask questions about your resume, career advice, or interview prep — powered by RAG.")
 
-    selected_source = "all"
+
 
     if st.button("🗑️ Clear Chat History"):
         st.session_state.chat_history = []
@@ -473,7 +412,7 @@ elif page == "Chat with Resume and Job Description":
     if uploaded_file:
         if st.button("💾 Save Resume to Vector DB"):
             with st.spinner("Saving to vector database..."):
-                result = call_backend("save_resume_to_vectorstore", uploaded_file, {"username": current_user})
+                result = call_backend("save_resume_to_vectorstore", uploaded_file, {})
             if result and result.get("success"):
                 st.success(f"✅ {result['message']}")
             elif result:
@@ -523,8 +462,6 @@ elif page == "Chat with Resume and Job Description":
                     "api_key": api_key,
                     "query": user_question,
                     "job_description": st.session_state.get("job_description", ""),
-                    "chat_source": selected_source,
-                    "username": current_user,
                 }
                 result = call_backend("chat_with_resume", uploaded_file, data)
                 response = result.get("llm_feedback", "No response received.") if result else "No response received."
@@ -664,7 +601,7 @@ elif page == "Compare Resumes":
                             resp = requests.post(
                                 "http://localhost:8000/save_resume_to_vectorstore",
                                 files=files,
-                                data={"username": current_user},
+                                data={},
                             )
                             if resp.status_code == 200 and resp.json().get("success"):
                                 st.success(f"✅ {f.name} — {resp.json()['message']}")
@@ -865,16 +802,18 @@ elif page == "Resume Insights":
             st.markdown("---")
             st.markdown("#### 💡 Quick Tips to Improve Your ATS Score")
             tips = []
-            if breakdown.get("Contact Info", {}).get("score", 0) < 20:
-                tips.append("Add missing contact info (email, phone, LinkedIn)")
-            if breakdown.get("Section Structure", {}).get("score", 0) < 20:
+            if breakdown.get("Contact Info", {}).get("score", 0) < 16:
+                tips.append("Add missing contact info ")
+            if breakdown.get("Section Structure", {}).get("score", 0) < 18:
                 tips.append("Use standard section headings: Education, Experience, Skills, Projects")
-            if breakdown.get("Resume Length", {}).get("score", 0) < 15:
-                tips.append("Aim for 300-900 words — concise but comprehensive")
+            if breakdown.get("Resume Length", {}).get("score", 0) < 10:
+                tips.append("Aim for 300-800 words — concise but comprehensive")
             if breakdown.get("Impact & Metrics", {}).get("score", 0) < 10:
                 tips.append("Quantify achievements with numbers and use action verbs (led, built, improved)")
             if breakdown.get("Keyword Relevance", {}).get("score", 0) < 10:
                 tips.append("Demonstrate skills in context, not just as a list — show how you used them")
+            if breakdown.get("Formatting & Readability", {}).get("score", 0) < 7:
+                tips.append("Use clean formatting with concise bullet points and consistent tense")
             if not tips:
                 tips.append("Your resume looks well-optimized for ATS! 🎉")
             for tip in tips:
@@ -897,8 +836,8 @@ elif page == "Resume Enhancement":
         st.warning("⚠️ Please enter your Hugging Face API key in the sidebar.")
         st.stop()
 
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "🔄 AI Rewriter", "🔑 Keyword Optimizer",
+    tab1, tab2, tab3 = st.tabs([
+        "🔄 AI Rewriter",
         "💌 Cover Letter", "📝 Summary Generator"
     ])
 
@@ -930,35 +869,9 @@ elif page == "Resume Enhancement":
             st.markdown("#### ✅ Enhanced Resume")
             st.markdown(st.session_state["rewrite_result"])
 
-    # ── TAB 2: Keyword Optimizer ──
+
+    # ── TAB 2: Cover Letter Generator ──
     with tab2:
-        st.subheader("🔑 Keyword Optimizer")
-        st.markdown("Find missing keywords from the JD and get specific suggestions on where to add them.")
-
-        keyword_jd = st.text_area(
-            "📋 Target Job Description",
-            height=180,
-            placeholder="Paste the job description to analyze keywords against...",
-            key="keyword_jd",
-        )
-
-        if not keyword_jd.strip():
-            st.info("✏️ Paste a job description above to analyze keyword gaps.")
-        elif st.button("🔍 Analyze Keywords", key="keyword_btn", type="primary"):
-            with st.spinner("🔄 Analyzing keyword gaps and generating suggestions..."):
-                result = call_backend("keyword_optimizer", uploaded_file, {
-                    "api_key": api_key,
-                    "job_description": keyword_jd,
-                })
-            if result and "llm_feedback" in result:
-                st.session_state["keyword_result"] = result["llm_feedback"]
-
-        if st.session_state.get("keyword_result"):
-            st.markdown("---")
-            st.markdown(st.session_state["keyword_result"])
-
-    # ── TAB 3: Cover Letter Generator ──
-    with tab3:
         st.subheader("💌 Cover Letter Generator")
         st.markdown("Generate a tailored cover letter based on your resume and the target job.")
 
@@ -998,8 +911,8 @@ elif page == "Resume Enhancement":
                 unsafe_allow_html=True,
             )
 
-    # ── TAB 4: Resume Summary Generator ──
-    with tab4:
+    # ── TAB 3: Resume Summary Generator ──
+    with tab3:
         st.subheader("📝 Summary / Objective Generator")
         st.markdown("Generate a professional summary, career objective, or headline tailored to a role.")
 
@@ -1039,11 +952,12 @@ elif page == "Resume Enhancement":
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# PAGE 7: Job Search
 # ═══════════════════════════════════════════════════════════════════════
-elif page == "Job Search":
-    st.header("🎯 Job Search & Matching")
-    st.markdown("Find matching jobs from the database or rank multiple job descriptions against your resume.")
+# PAGE 7: Batch JD Matching
+# ═══════════════════════════════════════════════════════════════════════
+elif page == "Batch JD Matching":
+    st.header("📋 Batch JD Matching")
+    st.markdown("Paste multiple job descriptions and rank them by fit against your resume.")
 
     uploaded_file = get_shared_resume()
     if not uploaded_file:
@@ -1052,130 +966,73 @@ elif page == "Job Search":
     if not api_key:
         st.warning("⚠️ Please enter your Hugging Face API key in the sidebar.")
         st.stop()
+    st.info("Separate each job description with `---JD---` on its own line.")
 
-    js_tab1, js_tab2 = st.tabs(["📌 Job Recommendations", "📋 Batch JD Matching"])
+    batch_jds = st.text_area(
+        "📋 Paste Multiple Job Descriptions",
+        height=300,
+        placeholder="Software Engineer at Google\nWe are looking for...\n\n---JD---\n\nData Scientist at Amazon\nWe need a candidate who...\n\n---JD---\n\nML Engineer at Meta\nExciting opportunity for...",
+        key="batch_jds",
+    )
 
-    # ── TAB 1: Job Recommendation Feed ──
-    with js_tab1:
-        st.subheader("📌 Job Recommendation Feed")
-        st.markdown("Automatically find the best-matching jobs from the vector store based on your resume.")
+    if not batch_jds.strip():
+        st.info("✏️ Paste job descriptions above, separated by `---JD---`.")
+    else:
+        jd_count = len([j for j in batch_jds.split("---JD---") if j.strip()])
+        st.success(f"✅ {jd_count} job description(s) detected")
 
-        top_n = st.slider("Number of recommendations", min_value=3, max_value=20, value=5, key="rec_topn")
-
-        if st.button("🔍 Find Matching Jobs", key="rec_btn", type="primary"):
-            with st.spinner(f"🔄 Searching for top {top_n} matching jobs..."):
-                result = call_backend("job_recommendations", uploaded_file, {
+        if st.button(f"🚀 Match Against {jd_count} JDs", key="batch_btn", type="primary"):
+            with st.spinner(f"🔄 Scoring resume against {jd_count} job descriptions..."):
+                result = call_backend("batch_jd_match", uploaded_file, {
                     "api_key": api_key,
-                    "top_n": str(top_n),
+                    "job_descriptions": batch_jds,
                 })
-            if result and "jobs" in result:
-                st.session_state["rec_result"] = result
+            if result and "results" in result:
+                st.session_state["batch_result"] = result["results"]
 
-        if st.session_state.get("rec_result"):
-            result = st.session_state["rec_result"]
-            jobs = result["jobs"]
+    if st.session_state.get("batch_result"):
+        results = st.session_state["batch_result"]
+        st.markdown("---")
 
-            st.markdown(f"---")
-            st.markdown(f"#### 🌟 Found {result['total_found']} Matching Jobs")
-
-            # Display job cards
-            for i, job in enumerate(jobs):
-                sim = job["similarity"]
-                color = get_score_color(int(sim))
-                medal = ["🥇", "🥈", "🥉"][i] if i < 3 else f"#{i+1}"
-
-                st.markdown(
-                    f"""<div style="background:#1e293b; border-left:4px solid {color};
-                        border-radius:8px; padding:1rem; margin-bottom:0.75rem;">
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <span style="font-size:1.2rem;">{medal}
-                                <span style="font-weight:600; color:#e2e8f0; margin-left:0.5rem;">Job Match {i+1}</span>
-                            </span>
-                            <span style="font-size:1.3rem; font-weight:700; color:{color};">{sim}%</span>
-                        </div>
-                    </div>""",
-                    unsafe_allow_html=True,
-                )
-                with st.expander(f"📄 View Job Description"):
-                    st.write(job["content"])
-
-            # LLM Analysis
-            st.markdown("---")
-            st.markdown("#### 🧠 AI Analysis")
-            st.markdown(result.get("summary", "No analysis available."))
-
-
-    # ── TAB 2: Batch JD Matching ──
-    with js_tab2:
-        st.subheader("📋 Batch JD Matching")
-        st.markdown("Paste multiple job descriptions and rank them by fit against your resume.")
-        st.info("Separate each job description with `---JD---` on its own line.")
-
-        batch_jds = st.text_area(
-            "📋 Paste Multiple Job Descriptions",
-            height=300,
-            placeholder="Software Engineer at Google\nWe are looking for...\n\n---JD---\n\nData Scientist at Amazon\nWe need a candidate who...\n\n---JD---\n\nML Engineer at Meta\nExciting opportunity for...",
-            key="batch_jds",
+        # Best match highlight
+        best = results[0]
+        best_color = get_score_color(best["match_score"])
+        st.markdown(
+            f"""<div style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+                border: 2px solid {best_color}; border-radius: 12px; padding: 1.5rem;
+                text-align: center; margin-bottom: 1rem;">
+                <div style="font-size: 0.9rem; color: #94a3b8;">🏆 Best Matching Job</div>
+                <div style="font-size: 1.3rem; font-weight: 700; color: #e2e8f0;">{best['jd_title']}</div>
+                <div style="font-size: 2.5rem; font-weight: 700; color: {best_color};">{best['match_score']}%</div>
+            </div>""",
+            unsafe_allow_html=True,
         )
 
-        if not batch_jds.strip():
-            st.info("✏️ Paste job descriptions above, separated by `---JD---`.")
-        else:
-            jd_count = len([j for j in batch_jds.split("---JD---") if j.strip()])
-            st.success(f"✅ {jd_count} job description(s) detected")
+        # Ranked list
+        st.subheader("🏅 Rankings")
+        for rank, r in enumerate(results, 1):
+            color = get_score_color(r["match_score"])
+            medal = ["🥇", "🥈", "🥉"][rank - 1] if rank <= 3 else f"#{rank}"
 
-            if st.button(f"🚀 Match Against {jd_count} JDs", key="batch_btn", type="primary"):
-                with st.spinner(f"🔄 Scoring resume against {jd_count} job descriptions..."):
-                    result = call_backend("batch_jd_match", uploaded_file, {
-                        "api_key": api_key,
-                        "job_descriptions": batch_jds,
-                    })
-                if result and "results" in result:
-                    st.session_state["batch_result"] = result["results"]
-
-        if st.session_state.get("batch_result"):
-            results = st.session_state["batch_result"]
-            st.markdown("---")
-
-            # Best match highlight
-            best = results[0]
-            best_color = get_score_color(best["match_score"])
             st.markdown(
-                f"""<div style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-                    border: 2px solid {best_color}; border-radius: 12px; padding: 1.5rem;
-                    text-align: center; margin-bottom: 1rem;">
-                    <div style="font-size: 0.9rem; color: #94a3b8;">🏆 Best Matching Job</div>
-                    <div style="font-size: 1.3rem; font-weight: 700; color: #e2e8f0;">{best['jd_title']}</div>
-                    <div style="font-size: 2.5rem; font-weight: 700; color: {best_color};">{best['match_score']}%</div>
+                f"""<div style="background:#1e293b; border-left:4px solid {color};
+                    border-radius:8px; padding:1rem; margin-bottom:0.75rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <div>
+                            <span style="font-size:1.3rem;">{medal}</span>
+                            <span style="font-size:1.1rem; font-weight:600; color:#e2e8f0; margin-left:0.5rem;">{r['jd_title']}</span>
+                        </div>
+                        <div style="font-size:1.5rem; font-weight:700; color:{color};">{r['match_score']}%</div>
+                    </div>
+                    <div style="display:flex; gap:1.5rem; margin-top:0.5rem; font-size:0.85rem; color:#94a3b8;">
+                        <span>Skills Fit: <b style="color:#e2e8f0">{r['skills_fit']}%</b></span>
+                        <span>Experience Fit: <b style="color:#e2e8f0">{r['experience_fit']}%</b></span>
+                    </div>
                 </div>""",
                 unsafe_allow_html=True,
             )
-
-            # Ranked list
-            st.subheader("🏅 Rankings")
-            for rank, r in enumerate(results, 1):
-                color = get_score_color(r["match_score"])
-                medal = ["🥇", "🥈", "🥉"][rank - 1] if rank <= 3 else f"#{rank}"
-
-                st.markdown(
-                    f"""<div style="background:#1e293b; border-left:4px solid {color};
-                        border-radius:8px; padding:1rem; margin-bottom:0.75rem;">
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <div>
-                                <span style="font-size:1.3rem;">{medal}</span>
-                                <span style="font-size:1.1rem; font-weight:600; color:#e2e8f0; margin-left:0.5rem;">{r['jd_title']}</span>
-                            </div>
-                            <div style="font-size:1.5rem; font-weight:700; color:{color};">{r['match_score']}%</div>
-                        </div>
-                        <div style="display:flex; gap:1.5rem; margin-top:0.5rem; font-size:0.85rem; color:#94a3b8;">
-                            <span>Skills Fit: <b style="color:#e2e8f0">{r['skills_fit']}%</b></span>
-                            <span>Experience Fit: <b style="color:#e2e8f0">{r['experience_fit']}%</b></span>
-                        </div>
-                    </div>""",
-                    unsafe_allow_html=True,
-                )
-                with st.expander(f"📝 Summary — {r['jd_title']}"):
-                    st.write(r.get("summary", "No summary available."))
+            with st.expander(f"📝 Summary — {r['jd_title']}"):
+                st.write(r.get("summary", "No summary available."))
 
 
 

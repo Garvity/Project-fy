@@ -40,3 +40,7 @@ Questions that pull from the FAISS database of job descriptions and resumes, mat
 Note: "Resume Only" and "All" are the most useful for day-to-day use.
  "Vector Store Only" is best for discovering matching job postings from the database.
   "Job Description Only" is useful when you just want to understand a JD without comparing it to a resume.
+
+  "Suggest projects that would strengthen my resume for this job description"
+"Based on matching job postings in the database, what kind of projects should I build?"
+"What project ideas align with the skills gap between my resume and this JD?"

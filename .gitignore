@@ -2,3 +2,5 @@ venv/
 __pycache__/
 *.pyc
 .env
+_session_cache.json
+_cached_resume.pdf
